@@ -6,6 +6,11 @@
 # No local database required — talks directly to the Railway API.
 # Requires: BMFOTE_URL and BMFOTE_TOKEN env vars (set by bmfote installer)
 
+# Load config — env vars take precedence, then config file
+BMFOTE_CONFIG="$HOME/.claude/bmfote.env"
+if [ -f "$BMFOTE_CONFIG" ]; then
+  . "$BMFOTE_CONFIG"
+fi
 BMFOTE_URL="${BMFOTE_URL:-}"
 BMFOTE_TOKEN="${BMFOTE_TOKEN:-}"
 

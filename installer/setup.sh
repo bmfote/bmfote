@@ -173,35 +173,16 @@ if changed:
 
 PYEOF
 
-# --- Step 6: Set environment variables ---
-echo "[6/6] Setting environment variables..."
+# --- Step 6: Write config file ---
+echo "[6/6] Saving configuration..."
 
-# Detect shell profile
-if [ -n "${ZSH_VERSION:-}" ] || [ "$SHELL" = "/bin/zsh" ]; then
-  PROFILE="$HOME/.zshrc"
-elif [ -f "$HOME/.bash_profile" ]; then
-  PROFILE="$HOME/.bash_profile"
-else
-  PROFILE="$HOME/.bashrc"
-fi
-
-# Check if already set
-if grep -q "BMFOTE_URL" "$PROFILE" 2>/dev/null; then
-  echo "  BMFOTE_URL already in $PROFILE — updating"
-  # Remove old entries
-  sed -i.bak '/^export BMFOTE_URL=/d' "$PROFILE"
-  sed -i.bak '/^export BMFOTE_TOKEN=/d' "$PROFILE"
-  rm -f "${PROFILE}.bak"
-fi
-
-cat >> "$PROFILE" << EOF
-
-# bmfote — cloud memory for AI agents
-export BMFOTE_URL="$BMFOTE_URL"
-export BMFOTE_TOKEN="$BMFOTE_TOKEN"
+CONFIG_FILE="$HOME/.claude/bmfote.env"
+cat > "$CONFIG_FILE" << EOF
+BMFOTE_URL=$BMFOTE_URL
+BMFOTE_TOKEN=$BMFOTE_TOKEN
 EOF
-
-echo "  Added BMFOTE_URL and BMFOTE_TOKEN to $PROFILE"
+chmod 600 "$CONFIG_FILE"
+echo "  Saved to $CONFIG_FILE"
 
 # --- Done ---
 echo ""
@@ -209,8 +190,7 @@ echo "Setup complete!"
 echo ""
 echo "  MCP server:  bmfote-memory → $BMFOTE_URL/mcp/"
 echo "  Hooks:       ~/.claude/hooks/bmfote-*.sh"
-echo "  Env vars:    BMFOTE_URL, BMFOTE_TOKEN in $PROFILE"
+echo "  Config:      ~/.claude/bmfote.env"
 echo "  Database:    $MSG_COUNT messages available"
 echo ""
-echo "Start a new Claude Code session to use memory tools."
-echo "Run 'source $PROFILE' to load env vars in this terminal."
+echo "Start a new Claude Code session to use memory tools. No restart needed."
