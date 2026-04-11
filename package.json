@@ -1,0 +1,28 @@
+{
+  "name": "bmfote",
+  "version": "0.1.0",
+  "description": "Cloud context for AI agents — drop-in experiential memory accessible across any agent or device",
+  "bin": {
+    "bmfote": "./bin/cli.js"
+  },
+  "files": [
+    "bin/",
+    "hooks/",
+    "installer/"
+  ],
+  "keywords": [
+    "ai",
+    "agents",
+    "memory",
+    "context",
+    "claude",
+    "mcp",
+    "turso"
+  ],
+  "author": "bmfote",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/bmfote/bmfote.git"
+  }
+}
