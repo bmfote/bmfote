@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-const { execSync, spawn } = require("child_process");
+const { spawn } = require("child_process");
 const path = require("path");
 const fs = require("fs");
 
@@ -11,34 +11,35 @@ if (!command || command === "--help" || command === "-h") {
 bmfote — cloud context for AI agents
 
 Usage:
-  npx bmfote setup
+  npx bmfote setup     Connect this machine to cloud memory
+  npx bmfote deploy    Stand up your own cloud memory backend
 
 Commands:
-  setup    Configure this machine for cloud memory
-           (adds MCP server, hooks, and env vars to Claude Code)
+  setup    Configure Claude Code on this machine
+           (adds MCP server, hooks, and config)
+  deploy   Create your own Turso database + Railway server
+           (requires turso CLI + railway CLI, both free tier)
 `);
   process.exit(0);
 }
 
-if (command === "setup") {
-  // Find the setup script bundled in this package
-  const setupScript = path.join(__dirname, "..", "installer", "setup.sh");
-
-  if (!fs.existsSync(setupScript)) {
-    console.error("Error: setup.sh not found in package. This is a bug.");
+function runScript(name) {
+  const script = path.join(__dirname, "..", "installer", name);
+  if (!fs.existsSync(script)) {
+    console.error(`Error: ${name} not found in package.`);
     process.exit(1);
   }
-
-  // Pass remaining args to the bash script
-  const setupArgs = args.slice(1);
-  const child = spawn("bash", [setupScript, ...setupArgs], {
+  const child = spawn("bash", [script, ...args.slice(1)], {
     stdio: "inherit",
     env: { ...process.env },
   });
+  child.on("close", (code) => process.exit(code || 0));
+}
 
-  child.on("close", (code) => {
-    process.exit(code || 0);
-  });
+if (command === "setup") {
+  runScript("setup.sh");
+} else if (command === "deploy") {
+  runScript("deploy.sh");
 } else {
   console.error(`Unknown command: ${command}`);
   console.error('Run "npx bmfote --help" for usage.');
