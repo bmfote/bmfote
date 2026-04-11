@@ -169,7 +169,7 @@ echo "  Schema applied (tables, FTS5, triggers)"
 # --- Step 5: Generate API token ---
 echo ""
 echo "[5/7] Generating API token..."
-API_TOKEN=$(openssl rand -base64 32)
+API_TOKEN=$(openssl rand -hex 32)
 echo "  API token generated"
 
 # --- Step 6: Deploy to Railway ---
