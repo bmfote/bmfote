@@ -58,12 +58,12 @@ if ! command -v turso &> /dev/null; then
 fi
 echo "  Turso CLI: $(turso --version 2>/dev/null | head -1 || echo 'found')"
 
-# Turso auth
-if ! turso auth status &>/dev/null; then
-  echo "  Not logged in to Turso."
+# Turso auth — test with an actual API call, not just auth status
+if ! turso db list &>/dev/null; then
+  echo "  Not logged in to Turso (or session expired)."
   if ask_install "and log in to Turso (opens browser)"; then
     turso auth login
-    if ! turso auth status &>/dev/null; then
+    if ! turso db list &>/dev/null; then
       echo "  ERROR: Turso login failed."
       exit 1
     fi
@@ -120,11 +120,24 @@ echo "[2/7] Creating Turso database..."
 if turso db show "$DB_NAME" &>/dev/null; then
   echo "  Database '$DB_NAME' already exists — reusing it"
 else
-  turso db create "$DB_NAME" 2>&1 | while read -r line; do echo "  $line"; done
+  if ! turso db create "$DB_NAME" 2>&1 | while read -r line; do echo "  $line"; done; then
+    echo "  Database creation failed. You may need to log in again."
+    if ask_install "and log in to Turso (opens browser)"; then
+      turso auth login
+      turso db create "$DB_NAME" 2>&1 | while read -r line; do echo "  $line"; done
+    else
+      echo "  Run manually: turso auth login && turso db create $DB_NAME"
+      exit 1
+    fi
+  fi
   echo "  Created database: $DB_NAME"
 fi
 
 TURSO_URL=$(turso db show "$DB_NAME" --url 2>/dev/null)
+if [ -z "$TURSO_URL" ]; then
+  echo "  ERROR: Could not get database URL. Check turso auth."
+  exit 1
+fi
 echo "  URL: $TURSO_URL"
 
 # --- Step 3: Create auth token ---
