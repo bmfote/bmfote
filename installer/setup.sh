@@ -99,7 +99,7 @@ GITHUB_RAW="https://raw.githubusercontent.com/bmfote/bmfote/main/hooks"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" 2>/dev/null && pwd 2>/dev/null || echo "")"
 HOOKS_SRC="${SCRIPT_DIR:+$SCRIPT_DIR/../hooks}"
 
-for hook in post-compaction-context.sh pre-compaction-context.sh; do
+for hook in post-compaction-context.sh pre-compaction-context.sh stop.sh sync-transcript.sh; do
   TARGET="$HOOKS_DIR/bmfote-$hook"
   if [ -f "$TARGET" ]; then
     echo "  Updating: $TARGET"
@@ -143,6 +143,7 @@ changed = False
 bmfote_hooks = {
     "UserPromptSubmit": f"{hooks_dir}/bmfote-post-compaction-context.sh",
     "PreCompact": f"{hooks_dir}/bmfote-pre-compaction-context.sh",
+    "Stop": f"{hooks_dir}/bmfote-stop.sh",
 }
 
 for event, script_path in bmfote_hooks.items():

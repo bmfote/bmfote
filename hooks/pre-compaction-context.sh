@@ -47,11 +47,10 @@ print('\n---\n'.join(lines))
 " 2>/dev/null)
 
 if [ -n "$FORMATTED" ]; then
-  python3 -c "
-import json
-ctx = '''IMPORTANT - Recent conversation messages from the memory database. These are the actual messages from this session that should be preserved in the summary:
-
-$FORMATTED'''
+  echo "$FORMATTED" | python3 -c "
+import json, sys
+formatted = sys.stdin.read()
+ctx = 'IMPORTANT - Recent conversation messages from the memory database. These are the actual messages from this session that should be preserved in the summary:\n\n' + formatted
 print(json.dumps({'additionalContext': ctx}))
 "
 fi
