@@ -540,7 +540,7 @@ class MessageCreate(BaseModel):
 
 
 @app.post("/api/messages")
-@limiter.limit("20/minute")
+@limiter.limit("200/minute")
 def create_message(request: Request, msg: MessageCreate):
     """Write a message to the shared memory. Returns the UUID."""
     conn = get_conn()
@@ -573,7 +573,7 @@ class SessionCreate(BaseModel):
 
 
 @app.post("/api/sessions")
-@limiter.limit("20/minute")
+@limiter.limit("60/minute")
 def create_session(request: Request, session: SessionCreate):
     """Create or update session metadata."""
     conn = get_conn()
