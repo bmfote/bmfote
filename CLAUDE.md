@@ -22,7 +22,7 @@ Cloud-synced experiential memory for AI agents, powered by Turso (libSQL).
 
 ```bash
 source .venv/bin/activate  # Python 3.12 (libsql lacks 3.14 wheels)
-python engine/server.py    # Starts on PORT from .env (default 8026)
+python -m engine.server    # Starts on PORT from .env (default 8026)
 ```
 
 ## Critical Constraint

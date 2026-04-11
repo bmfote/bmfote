@@ -7,3 +7,5 @@ __pycache__/
 *.db-wal
 *.db-info
 .DS_Store
+.mcp.json
+*.log

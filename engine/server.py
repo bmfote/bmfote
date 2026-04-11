@@ -3,30 +3,77 @@
 
 import hashlib
 import json
+import logging
 import os
 import re
 import time
+from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
-from pathlib import Path
-from contextlib import contextmanager
 from typing import List, Optional
 
-import libsql_experimental as libsql
 from dotenv import load_dotenv
 from fastapi import FastAPI, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
+from slowapi import Limiter
+from slowapi.errors import RateLimitExceeded
+from slowapi.middleware import SlowAPIMiddleware
+from slowapi.util import get_remote_address
+
+from engine.db import get_conn, rows_to_dicts, row_to_dict
+from engine.mcp_server import mcp
 
 load_dotenv()
 
-TURSO_URL = os.getenv("TURSO_DATABASE_URL", "")
-TURSO_TOKEN = os.getenv("TURSO_AUTH_TOKEN", "")
 API_TOKEN = os.getenv("API_TOKEN", "")
 PORT = int(os.getenv("PORT", "8026"))
-DB_PATH = Path(__file__).parent / "local-replica.db"
 
-app = FastAPI(title="bmfote Memory API", version="1.0.0")
+logger = logging.getLogger("bmfote")
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s %(levelname)s %(message)s",
+    datefmt="%Y-%m-%d %H:%M:%S",
+)
+
+# Build the MCP sub-app (initializes session_manager) then wire its lifespan
+mcp_app = mcp.streamable_http_app()
+
+
+@asynccontextmanager
+async def lifespan(app):
+    async with mcp.session_manager.run():
+        yield
+
+
+app = FastAPI(title="bmfote Memory API", version="1.0.0", lifespan=lifespan)
+
+# Mount MCP — its lifespan is managed by the parent app above
+app.mount("/mcp", mcp_app)
+
+# --- Rate limiting ---
+def _get_real_ip(request: Request) -> str:
+    """Get client IP, preferring X-Forwarded-For behind Railway's proxy."""
+    forwarded = request.headers.get("x-forwarded-for")
+    if forwarded:
+        return forwarded.split(",")[0].strip()
+    return request.client.host if request.client else "127.0.0.1"
+
+
+limiter = Limiter(key_func=_get_real_ip)
+app.state.limiter = limiter
+
+
+app.add_middleware(SlowAPIMiddleware)
+
+
+@app.exception_handler(RateLimitExceeded)
+async def rate_limit_handler(request: Request, exc: RateLimitExceeded):
+    return JSONResponse(
+        status_code=429,
+        content={"error": "rate limit exceeded", "detail": str(exc.detail)},
+    )
+
 
 # CORS for dashboard access
 app.add_middleware(
@@ -35,54 +82,6 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
-
-
-# =============================================================
-# Connection layer — embedded replica (local) or remote (Railway)
-# =============================================================
-
-def get_connection():
-    """Create libSQL connection. Embedded replica locally, remote on Railway."""
-    if os.getenv("RAILWAY_ENVIRONMENT"):
-        return libsql.connect(database=TURSO_URL, auth_token=TURSO_TOKEN)
-    else:
-        return libsql.connect(
-            database=str(DB_PATH),
-            sync_url=TURSO_URL,
-            auth_token=TURSO_TOKEN,
-        )
-
-
-# Module-level connection — reused across requests
-_conn = None
-
-
-def _get_conn():
-    global _conn
-    if _conn is None:
-        _conn = get_connection()
-        if not os.getenv("RAILWAY_ENVIRONMENT"):
-            _conn.sync()
-    return _conn
-
-
-def rows_to_dicts(cursor) -> list[dict]:
-    """Convert libSQL cursor results to list of dicts."""
-    if cursor.description is None:
-        return []
-    columns = [d[0] for d in cursor.description]
-    return [dict(zip(columns, row)) for row in cursor.fetchall()]
-
-
-def row_to_dict(cursor) -> Optional[dict]:
-    """Fetch one row as dict, or None."""
-    if cursor.description is None:
-        return None
-    columns = [d[0] for d in cursor.description]
-    row = cursor.fetchone()
-    if row is None:
-        return None
-    return dict(zip(columns, row))
 
 
 def slugify(text: str) -> str:
@@ -95,12 +94,13 @@ def slugify(text: str) -> str:
 
 
 # =============================================================
-# Optional bearer token auth
+# Bearer token auth — protects /api/ and /mcp/ when API_TOKEN is set
 # =============================================================
 
 @app.middleware("http")
 async def auth_middleware(request: Request, call_next):
-    if API_TOKEN and request.url.path.startswith("/api/"):
+    path = request.url.path
+    if API_TOKEN and (path.startswith("/api/") or path.startswith("/mcp/")):
         auth = request.headers.get("authorization", "")
         if not auth.startswith("Bearer ") or auth[7:] != API_TOKEN:
             return JSONResponse(status_code=401, content={"error": "unauthorized"})
@@ -108,17 +108,39 @@ async def auth_middleware(request: Request, call_next):
 
 
 # =============================================================
+# Request logging
+# =============================================================
+
+@app.middleware("http")
+async def logging_middleware(request: Request, call_next):
+    start = time.time()
+    response = await call_next(request)
+    elapsed = (time.time() - start) * 1000
+    logger.info(
+        "%s %s %s %dms %s",
+        request.client.host if request.client else "-",
+        request.method,
+        request.url.path,
+        elapsed,
+        response.status_code,
+    )
+    return response
+
+
+# =============================================================
 # CONVERSATION SEARCH ENDPOINTS
 # =============================================================
 
 @app.get("/api/search")
+@limiter.limit("60/minute")
 def search_messages(
+    request: Request,
     q: str,
     limit: int = Query(default=20, le=100),
     type: str = Query(default=None, description="Filter by 'user' or 'assistant'"),
 ):
     """Full-text search over conversation messages with BM25 ranking."""
-    conn = _get_conn()
+    conn = get_conn()
     sql = """
         SELECT m.uuid, m.session_id, m.type, m.role, m.timestamp, m.model,
                s.project,
@@ -142,12 +164,14 @@ def search_messages(
 
 
 @app.get("/api/similar-error")
+@limiter.limit("60/minute")
 def similar_error(
+    request: Request,
     error: str,
     limit: int = Query(default=5, le=20),
 ):
     """Find past errors and their solutions."""
-    conn = _get_conn()
+    conn = get_conn()
     error_matches = rows_to_dicts(conn.execute("""
         SELECT m.uuid, m.session_id, m.content, m.timestamp,
                s.project,
@@ -182,12 +206,14 @@ def similar_error(
 
 
 @app.get("/api/message/{uuid}")
+@limiter.limit("60/minute")
 def get_message(
+    request: Request,
     uuid: str,
     context: int = Query(default=1, ge=0, le=10),
 ):
     """Get full message content by UUID, with optional surrounding context."""
-    conn = _get_conn()
+    conn = get_conn()
     target = row_to_dict(conn.execute("""
         SELECT m.uuid, m.session_id, m.type, m.role, m.content,
                m.timestamp, m.model, s.project
@@ -220,13 +246,15 @@ def get_message(
 
 
 @app.get("/api/recent")
+@limiter.limit("60/minute")
 def recent_messages(
+    request: Request,
     hours: int = Query(default=24, le=168),
     limit: int = Query(default=50, le=200),
     session_id: str = Query(default=None),
 ):
     """Get recent messages, optionally filtered by session."""
-    conn = _get_conn()
+    conn = get_conn()
     if session_id:
         sql = """
             SELECT m.uuid, m.session_id, m.type, m.role, m.content, m.timestamp,
@@ -254,12 +282,14 @@ def recent_messages(
 
 
 @app.get("/api/project/{project_name}")
+@limiter.limit("60/minute")
 def project_messages(
+    request: Request,
     project_name: str,
     limit: int = Query(default=20, le=100),
 ):
     """Get recent messages from a specific project."""
-    conn = _get_conn()
+    conn = get_conn()
     return rows_to_dicts(conn.execute("""
         SELECT m.uuid, m.session_id, m.type, m.content, m.timestamp
         FROM messages m
@@ -271,9 +301,10 @@ def project_messages(
 
 
 @app.get("/api/stats")
-def stats():
+@limiter.limit("60/minute")
+def stats(request: Request):
     """Database statistics."""
-    conn = _get_conn()
+    conn = get_conn()
     msg_count = conn.execute("SELECT COUNT(*) FROM messages").fetchone()[0]
     session_count = conn.execute("SELECT COUNT(*) FROM sessions").fetchone()[0]
     tool_count = conn.execute("SELECT COUNT(*) FROM tool_uses").fetchone()[0]
@@ -309,7 +340,9 @@ def stats():
 # =============================================================
 
 @app.get("/api/vault/search")
+@limiter.limit("60/minute")
 def vault_search(
+    request: Request,
     q: str,
     project: str = Query(default=None),
     doc_type: str = Query(default=None),
@@ -317,7 +350,7 @@ def vault_search(
     limit: int = Query(default=10, le=50),
 ):
     """Faceted full-text search over curated vault content with weighted BM25."""
-    conn = _get_conn()
+    conn = get_conn()
     sql = """
         SELECT v.file_path, v.project, v.topic, v.date, v.outcome,
                v.tags, v.doc_type,
@@ -346,9 +379,10 @@ def vault_search(
 
 
 @app.get("/api/vault/doc/{file_path:path}")
-def vault_doc(file_path: str):
+@limiter.limit("60/minute")
+def vault_doc(request: Request, file_path: str):
     """Get full vault document content by path."""
-    conn = _get_conn()
+    conn = get_conn()
     result = row_to_dict(conn.execute(
         "SELECT * FROM vault_docs WHERE file_path = ?", (file_path,)
     ))
@@ -358,9 +392,10 @@ def vault_doc(file_path: str):
 
 
 @app.get("/api/vault/stats")
-def vault_stats():
+@limiter.limit("60/minute")
+def vault_stats(request: Request):
     """Vault statistics."""
-    conn = _get_conn()
+    conn = get_conn()
     by_type = rows_to_dicts(conn.execute(
         "SELECT doc_type, COUNT(*) as count FROM vault_docs GROUP BY doc_type"
     ))
@@ -382,14 +417,16 @@ def vault_stats():
 
 
 @app.get("/api/vault/list")
+@limiter.limit("60/minute")
 def vault_list(
+    request: Request,
     project: str = Query(default=None),
     doc_type: str = Query(default=None),
     outcome: str = Query(default=None),
     limit: int = Query(default=50, le=200),
 ):
     """List vault documents with optional filters."""
-    conn = _get_conn()
+    conn = get_conn()
     sql = """
         SELECT file_path, project, topic, date, outcome, tags, doc_type
         FROM vault_docs WHERE 1=1
@@ -424,9 +461,10 @@ class ArchiveCreate(BaseModel):
 
 
 @app.post("/api/vault/archive")
-def create_archive(archive: ArchiveCreate):
+@limiter.limit("20/minute")
+def create_archive(request: Request, archive: ArchiveCreate):
     """Create a new session archive directly in the vault_docs table."""
-    conn = _get_conn()
+    conn = get_conn()
     slug = slugify(archive.topic)
     file_path = f"{archive.project}/sessions/{archive.date}_{slug}.md"
 
@@ -485,13 +523,89 @@ def create_archive(archive: ArchiveCreate):
 
 
 # =============================================================
+# WRITE ENDPOINTS — any machine can push data to shared memory
+# =============================================================
+
+class MessageCreate(BaseModel):
+    session_id: str
+    uuid: str
+    content: Optional[str] = None
+    type: str = "user"
+    role: Optional[str] = None
+    parent_uuid: Optional[str] = None
+    model: Optional[str] = None
+    input_tokens: Optional[int] = None
+    output_tokens: Optional[int] = None
+    timestamp: Optional[str] = None
+
+
+@app.post("/api/messages")
+@limiter.limit("20/minute")
+def create_message(request: Request, msg: MessageCreate):
+    """Write a message to the shared memory. Returns the UUID."""
+    conn = get_conn()
+    ts = msg.timestamp or datetime.now(timezone.utc).isoformat()
+
+    conn.execute("""
+        INSERT INTO messages (uuid, session_id, parent_uuid, type, role,
+                              content, model, input_tokens, output_tokens, timestamp)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(uuid) DO UPDATE SET
+            content=excluded.content, model=excluded.model,
+            input_tokens=excluded.input_tokens, output_tokens=excluded.output_tokens
+    """, (
+        msg.uuid, msg.session_id, msg.parent_uuid, msg.type, msg.role,
+        msg.content, msg.model, msg.input_tokens, msg.output_tokens, ts,
+    ))
+    conn.commit()
+    if not os.getenv("RAILWAY_ENVIRONMENT"):
+        conn.sync()
+
+    return {"uuid": msg.uuid, "status": "ok"}
+
+
+class SessionCreate(BaseModel):
+    session_id: str
+    project: Optional[str] = None
+    first_message_at: Optional[str] = None
+    last_message_at: Optional[str] = None
+    message_count: Optional[int] = None
+
+
+@app.post("/api/sessions")
+@limiter.limit("20/minute")
+def create_session(request: Request, session: SessionCreate):
+    """Create or update session metadata."""
+    conn = get_conn()
+
+    conn.execute("""
+        INSERT INTO sessions (session_id, project, first_message_at,
+                              last_message_at, message_count)
+        VALUES (?, ?, ?, ?, ?)
+        ON CONFLICT(session_id) DO UPDATE SET
+            project=COALESCE(excluded.project, sessions.project),
+            last_message_at=COALESCE(excluded.last_message_at, sessions.last_message_at),
+            message_count=COALESCE(excluded.message_count, sessions.message_count)
+    """, (
+        session.session_id, session.project, session.first_message_at,
+        session.last_message_at, session.message_count,
+    ))
+    conn.commit()
+    if not os.getenv("RAILWAY_ENVIRONMENT"):
+        conn.sync()
+
+    return {"session_id": session.session_id, "status": "ok"}
+
+
+# =============================================================
 # SYNC ENDPOINT
 # =============================================================
 
 @app.post("/api/sync")
-def manual_sync():
+@limiter.limit("10/minute")
+def manual_sync(request: Request):
     """Manually trigger embedded replica sync with Turso Cloud."""
-    conn = _get_conn()
+    conn = get_conn()
     if os.getenv("RAILWAY_ENVIRONMENT"):
         return {"status": "skipped", "reason": "remote connection, no replica to sync"}
     conn.sync()
