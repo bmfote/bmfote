@@ -9,22 +9,16 @@ from mcp.server.fastmcp.server import TransportSecuritySettings
 
 from engine.db import get_conn, rows_to_dicts, row_to_dict
 
-# On Railway, allow the public domain; locally, defaults are fine
-_allowed_hosts = ["127.0.0.1:*", "localhost:*", "[::1]:*"]
-_allowed_origins = ["http://127.0.0.1:*", "http://localhost:*", "http://[::1]:*"]
-if os.getenv("RAILWAY_PUBLIC_DOMAIN"):
-    domain = os.getenv("RAILWAY_PUBLIC_DOMAIN")
-    _allowed_hosts.append(domain)
-    _allowed_origins.append(f"https://{domain}")
+# On Railway (or any cloud deploy), disable DNS rebinding protection
+# since the bearer token already gates all access.
+_on_cloud = bool(os.getenv("RAILWAY_ENVIRONMENT") or os.getenv("PORT"))
 
 mcp = FastMCP(
     "bmfote-memory",
     streamable_http_path="/",
     transport_security=TransportSecuritySettings(
-        enable_dns_rebinding_protection=True,
-        allowed_hosts=_allowed_hosts,
-        allowed_origins=_allowed_origins,
-    ),
+        enable_dns_rebinding_protection=not _on_cloud,
+    ) if not _on_cloud else None,
 )
 
 
