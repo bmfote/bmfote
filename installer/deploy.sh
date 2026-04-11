@@ -27,42 +27,88 @@ echo ""
 echo "This will create your own cloud memory backend."
 echo ""
 
-# --- Step 1: Check prerequisites ---
+# --- Step 1: Check and install prerequisites ---
 echo "[1/7] Checking prerequisites..."
 
+ask_install() {
+  local name="$1"
+  echo ""
+  read -p "  Install $name now? [Y/n] " -n 1 -r
+  echo ""
+  [[ -z "$REPLY" || "$REPLY" =~ ^[Yy]$ ]]
+}
+
+# Turso CLI
 if ! command -v turso &> /dev/null; then
-  echo "  ERROR: Turso CLI not found."
-  echo "  Install: curl -sSfL https://get.tur.so/install.sh | bash"
-  echo "  Then:    turso auth login"
-  exit 1
+  echo "  Turso CLI not found."
+  if ask_install "Turso CLI"; then
+    curl -sSfL https://get.tur.so/install.sh | bash
+    echo ""
+    # Reload PATH
+    export PATH="$HOME/.turso:$PATH"
+    if ! command -v turso &> /dev/null; then
+      echo "  ERROR: Turso CLI install failed. Install manually:"
+      echo "  curl -sSfL https://get.tur.so/install.sh | bash"
+      exit 1
+    fi
+  else
+    echo "  Install manually: curl -sSfL https://get.tur.so/install.sh | bash"
+    exit 1
+  fi
 fi
 echo "  Turso CLI: $(turso --version 2>/dev/null | head -1 || echo 'found')"
 
-# Check Turso auth
+# Turso auth
 if ! turso auth status &>/dev/null; then
-  echo "  ERROR: Not logged in to Turso."
-  echo "  Run:  turso auth login"
-  exit 1
+  echo "  Not logged in to Turso."
+  if ask_install "and log in to Turso (opens browser)"; then
+    turso auth login
+    if ! turso auth status &>/dev/null; then
+      echo "  ERROR: Turso login failed."
+      exit 1
+    fi
+  else
+    echo "  Run manually: turso auth login"
+    exit 1
+  fi
 fi
 echo "  Turso: authenticated"
 
+# Railway CLI
 if ! command -v railway &> /dev/null; then
-  echo "  ERROR: Railway CLI not found."
-  echo "  Install: npm install -g @railway/cli"
-  echo "  Then:    railway login"
-  exit 1
+  echo "  Railway CLI not found."
+  if ask_install "Railway CLI"; then
+    npm install -g @railway/cli
+    if ! command -v railway &> /dev/null; then
+      echo "  ERROR: Railway CLI install failed. Install manually:"
+      echo "  npm install -g @railway/cli"
+      exit 1
+    fi
+  else
+    echo "  Install manually: npm install -g @railway/cli"
+    exit 1
+  fi
 fi
 echo "  Railway CLI: $(railway --version 2>/dev/null || echo 'found')"
 
+# Railway auth
 if ! railway whoami &>/dev/null; then
-  echo "  ERROR: Not logged in to Railway."
-  echo "  Run:  railway login"
-  exit 1
+  echo "  Not logged in to Railway."
+  if ask_install "and log in to Railway (opens browser)"; then
+    railway login
+    if ! railway whoami &>/dev/null; then
+      echo "  ERROR: Railway login failed."
+      exit 1
+    fi
+  else
+    echo "  Run manually: railway login"
+    exit 1
+  fi
 fi
 echo "  Railway: authenticated"
 
 if ! command -v git &> /dev/null; then
-  echo "  ERROR: git not found."
+  echo "  ERROR: git not found. Please install git first."
   exit 1
 fi
 
