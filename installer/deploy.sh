@@ -58,13 +58,22 @@ if ! command -v turso &> /dev/null; then
 fi
 echo "  Turso CLI: $(turso --version 2>/dev/null | head -1 || echo 'found')"
 
-# Turso auth — test with an actual API call, not just auth status
-if ! turso db list &>/dev/null; then
+# Turso auth — check output for login errors, not just exit code
+turso_check() {
+  local output
+  output=$(turso db list 2>&1)
+  if echo "$output" | grep -qi "not logged in\|please login\|unauthorized"; then
+    return 1
+  fi
+  return 0
+}
+
+if ! turso_check; then
   echo "  Not logged in to Turso (or session expired)."
   if ask_install "and log in to Turso (opens browser)"; then
     turso auth login
-    if ! turso db list &>/dev/null; then
-      echo "  ERROR: Turso login failed."
+    if ! turso_check; then
+      echo "  ERROR: Turso login still failing. Run: turso auth login"
       exit 1
     fi
   else
@@ -133,9 +142,11 @@ else
   echo "  Created database: $DB_NAME"
 fi
 
-TURSO_URL=$(turso db show "$DB_NAME" --url 2>/dev/null)
-if [ -z "$TURSO_URL" ]; then
-  echo "  ERROR: Could not get database URL. Check turso auth."
+TURSO_URL=$(turso db show "$DB_NAME" --url 2>&1)
+if [ -z "$TURSO_URL" ] || echo "$TURSO_URL" | grep -qi "not logged in\|please login\|error"; then
+  echo "  ERROR: Could not get database URL. Turso session may have expired."
+  echo "  Run: turso auth login"
+  echo "  Then re-run: npx bmfote deploy"
   exit 1
 fi
 echo "  URL: $TURSO_URL"
@@ -143,7 +154,13 @@ echo "  URL: $TURSO_URL"
 # --- Step 3: Create auth token ---
 echo ""
 echo "[3/7] Creating database auth token..."
-TURSO_TOKEN=$(turso db tokens create "$DB_NAME" --expiration none 2>/dev/null)
+TURSO_TOKEN=$(turso db tokens create "$DB_NAME" --expiration none 2>&1)
+if [ -z "$TURSO_TOKEN" ] || echo "$TURSO_TOKEN" | grep -qi "not logged in\|please login\|error"; then
+  echo "  ERROR: Could not create token. Turso session may have expired."
+  echo "  Run: turso auth login"
+  echo "  Then re-run: npx bmfote deploy"
+  exit 1
+fi
 echo "  Token created (non-expiring)"
 
 # --- Step 4: Run schema ---
