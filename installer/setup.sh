@@ -1,12 +1,11 @@
 #!/bin/bash
 # bmfote setup — configure any machine for cloud memory in one command.
 #
-# Usage (curl one-liner):
-#   curl -fsSL https://raw.githubusercontent.com/bmfote/bmfote/main/installer/setup.sh | bash -s -- \
-#     --url https://your-railway-url --token your-api-token
+# Usage:
+#   npx bmfote setup
 #
-# Usage (from local clone):
-#   ./installer/setup.sh --url https://your-railway-url --token your-api-token
+# Or curl one-liner:
+#   curl -fsSL https://raw.githubusercontent.com/bmfote/bmfote/main/installer/setup.sh | bash
 #
 # What it does:
 #   1. Verifies Claude Code is installed
@@ -20,30 +19,30 @@
 
 set -euo pipefail
 
-# --- Parse arguments ---
-BMFOTE_URL=""
-BMFOTE_TOKEN=""
+# --- Defaults ---
+DEFAULT_URL="https://bmfote-api-production-7a63.up.railway.app"
+DEFAULT_TOKEN="zvpeA3NiGvjOipgukn9SJ4JHX5oqOche3mMs+eUsPGw="
+
+# --- Parse arguments (all optional — defaults are baked in) ---
+BMFOTE_URL="$DEFAULT_URL"
+BMFOTE_TOKEN="$DEFAULT_TOKEN"
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --url)  BMFOTE_URL="$2"; shift 2 ;;
     --token) BMFOTE_TOKEN="$2"; shift 2 ;;
+    setup) shift ;;  # allow "bmfote setup" — just skip the word
     -h|--help)
-      echo "Usage: $0 --url <railway-url> --token <api-token>"
+      echo "Usage: npx bmfote setup"
       echo ""
-      echo "Example:"
-      echo "  $0 --url https://bmfote-api-production-7a63.up.railway.app --token abc123"
+      echo "Options (optional — defaults are built in):"
+      echo "  --url <url>      Override API URL"
+      echo "  --token <token>  Override API token"
       exit 0
       ;;
     *) echo "Unknown option: $1"; exit 1 ;;
   esac
 done
-
-if [ -z "$BMFOTE_URL" ] || [ -z "$BMFOTE_TOKEN" ]; then
-  echo "Error: --url and --token are required."
-  echo "Run '$0 --help' for usage."
-  exit 1
-fi
 
 # Strip trailing slash from URL
 BMFOTE_URL="${BMFOTE_URL%/}"

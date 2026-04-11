@@ -11,14 +11,11 @@ if (!command || command === "--help" || command === "-h") {
 bmfote — cloud context for AI agents
 
 Usage:
-  npx bmfote setup --url <railway-url> --token <api-token>
+  npx bmfote setup
 
 Commands:
   setup    Configure this machine for cloud memory
            (adds MCP server, hooks, and env vars to Claude Code)
-
-Example:
-  npx bmfote setup --url https://bmfote-api-production.up.railway.app --token abc123
 `);
   process.exit(0);
 }
