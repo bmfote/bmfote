@@ -1,14 +1,18 @@
 #!/bin/bash
 # bmfote setup — configure any machine for cloud memory in one command.
 #
-# Usage:
-#   ./setup.sh --url https://your-railway-url --token your-api-token
+# Usage (curl one-liner):
+#   curl -fsSL https://raw.githubusercontent.com/bmfote/bmfote/main/installer/setup.sh | bash -s -- \
+#     --url https://your-railway-url --token your-api-token
+#
+# Usage (from local clone):
+#   ./installer/setup.sh --url https://your-railway-url --token your-api-token
 #
 # What it does:
 #   1. Verifies Claude Code is installed
 #   2. Tests connection to the bmfote API
 #   3. Adds MCP server to Claude Code (user scope)
-#   4. Copies hook scripts to ~/.claude/hooks/
+#   4. Downloads/copies hook scripts to ~/.claude/hooks/
 #   5. Configures hooks in ~/.claude/settings.json
 #   6. Sets BMFOTE_URL and BMFOTE_TOKEN in shell profile
 #
@@ -85,22 +89,17 @@ claude mcp add -s user --transport http \
 
 echo "  Added MCP server: bmfote-memory (user scope)"
 
-# --- Step 4: Copy hook scripts ---
+# --- Step 4: Install hook scripts ---
 echo "[4/6] Installing hook scripts..."
 HOOKS_DIR="$HOME/.claude/hooks"
 mkdir -p "$HOOKS_DIR"
 
-# Find the source hooks directory (relative to this script)
-SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-HOOKS_SRC="$SCRIPT_DIR/../hooks"
+GITHUB_RAW="https://raw.githubusercontent.com/bmfote/bmfote/main/hooks"
 
-if [ ! -f "$HOOKS_SRC/post-compaction-context.sh" ]; then
-  echo "  ERROR: Hook source files not found at $HOOKS_SRC"
-  echo "  Make sure you're running this from the bmfote repo."
-  exit 1
-fi
+# Try local repo first, fall back to GitHub download
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" 2>/dev/null && pwd 2>/dev/null || echo "")"
+HOOKS_SRC="${SCRIPT_DIR:+$SCRIPT_DIR/../hooks}"
 
-# Copy hooks, backing up existing ones
 for hook in post-compaction-context.sh pre-compaction-context.sh; do
   TARGET="$HOOKS_DIR/bmfote-$hook"
   if [ -f "$TARGET" ]; then
@@ -108,7 +107,15 @@ for hook in post-compaction-context.sh pre-compaction-context.sh; do
   else
     echo "  Installing: $TARGET"
   fi
-  cp "$HOOKS_SRC/$hook" "$TARGET"
+
+  if [ -n "$HOOKS_SRC" ] && [ -f "$HOOKS_SRC/$hook" ]; then
+    cp "$HOOKS_SRC/$hook" "$TARGET"
+  else
+    curl -fsSL "$GITHUB_RAW/$hook" -o "$TARGET" || {
+      echo "  ERROR: Failed to download $hook from GitHub"
+      exit 1
+    }
+  fi
   chmod +x "$TARGET"
 done
 
