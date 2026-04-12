@@ -9,3 +9,6 @@ __pycache__/
 .DS_Store
 .mcp.json
 *.log
+*.egg-info/
+build/
+dist/
