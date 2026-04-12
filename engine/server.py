@@ -296,8 +296,8 @@ def search_messages(
 ):
     try:
         return query_search(q, limit, type)
-    except Exception:
-        return JSONResponse(status_code=400, content={"error": "invalid search query"})
+    except Exception as e:
+        return JSONResponse(status_code=400, content={"error": f"invalid search query: {e}"})
 
 
 @app.get("/api/similar-error")
@@ -309,8 +309,8 @@ def similar_error(
 ):
     try:
         return query_similar_error(error, limit)
-    except Exception:
-        return JSONResponse(status_code=400, content={"error": "invalid search query"})
+    except Exception as e:
+        return JSONResponse(status_code=400, content={"error": f"invalid search query: {e}"})
 
 
 @app.get("/api/message/{uuid}")
@@ -394,8 +394,8 @@ def vault_search(
 ):
     try:
         return query_vault_search(q, project, doc_type, outcome, limit)
-    except Exception:
-        return JSONResponse(status_code=400, content={"error": "invalid search query"})
+    except Exception as e:
+        return JSONResponse(status_code=400, content={"error": f"invalid search query: {e}"})
 
 
 @app.get("/api/vault/doc/{file_path:path}")
@@ -470,8 +470,8 @@ def vault_list(
 class ArchiveCreate(BaseModel):
     project: str
     topic: str
-    date: str
-    outcome: str
+    date: str = Field(default_factory=lambda: datetime.now(timezone.utc).date().isoformat())
+    outcome: str = "in-progress"
     tags: List[str] = []
     content: str = Field(max_length=100000)
     doc_type: str = "session"
