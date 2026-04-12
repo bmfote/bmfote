@@ -3,7 +3,7 @@
 <h4 align="center"><b>Cloud context for AI agents</b> — drop-in experiential memory that follows your agent across sessions, machines, and SDKs.</h4>
 
 <p align="center">
-  <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-blue.svg" alt="License"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/License-AGPL%203.0-blue.svg" alt="License"></a>
   <a href="package.json"><img src="https://img.shields.io/badge/version-0.11.1-green.svg" alt="Version"></a>
   <img src="https://img.shields.io/badge/python-%E2%89%A53.12-brightgreen.svg" alt="Python">
   <img src="https://img.shields.io/badge/node-%E2%89%A518-brightgreen.svg" alt="Node">
@@ -289,8 +289,13 @@ Local dev uses an embedded libSQL replica at `engine/local-replica.db` that sync
 
 ## License
 
-MIT. See [LICENSE](LICENSE).
+bmfote uses a split license:
+
+- **Server, hooks, installer, and CLI** — [GNU AGPL-3.0](LICENSE). If you modify bmfote and run it as a network service, AGPL-3.0 requires you to make your modified source available to your users.
+- **Python client library** ([`client/`](client/)) — [MIT](client/LICENSE). Free to embed in proprietary agent code with no copyleft obligations.
+
+The server is AGPL so commercial re-hosters can't take bmfote, add private features, and compete as a closed SaaS. The client is MIT so you can drop it into any agent codebase — proprietary or not — without license friction.
 
 ---
 
-**Built with FastMCP** | **Powered by Turso (libSQL)** | **MIT Licensed**
+**Built with FastMCP** | **Powered by Turso (libSQL)** | **AGPL-3.0 + MIT (split)**
