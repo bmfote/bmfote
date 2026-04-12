@@ -1,13 +1,14 @@
 """FastMCP server — 5 memory tools for Claude Code, backed by shared query functions."""
 
-import os
 from typing import Optional
 
 from mcp.server.fastmcp import FastMCP
 from mcp.server.fastmcp.server import TransportSecuritySettings
 
-# On Railway, disable DNS rebinding protection — bearer token gates access.
-_on_cloud = bool(os.getenv("RAILWAY_ENVIRONMENT"))
+from engine.db import is_remote_db
+
+# In remote-DB mode, disable DNS rebinding protection — bearer token gates access.
+_on_cloud = is_remote_db()
 
 mcp = FastMCP(
     "bmfote-memory",

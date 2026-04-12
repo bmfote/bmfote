@@ -45,7 +45,7 @@ if [ -z "$BMFOTE_URL" ] || [ -z "$BMFOTE_TOKEN" ]; then
   echo ""
   echo "Usage: npx bmfote setup --url <API_URL> --token <API_TOKEN>"
   echo ""
-  echo "Run 'npx bmfote deploy' first to get your URL and token."
+  echo "See https://github.com/bmfote/bmfote#part-1-deploy-the-server to get your URL and token."
   exit 1
 fi
 
@@ -75,13 +75,24 @@ STATS=$(curl -sf --connect-timeout 5 --max-time 10 \
   echo "  Check your --url and --token values."
   exit 1
 }
-MSG_COUNT=$(echo "$STATS" | python3 -c "import sys,json; print(json.load(sys.stdin)['messages'])" 2>/dev/null || echo "?")
+MSG_COUNT=$(echo "$STATS" | python3 -c "
+import sys, json
+try:
+    d = json.loads(sys.stdin.read())
+    print(d['messages'])
+except (json.JSONDecodeError, KeyError, TypeError):
+    sys.exit(1)
+" 2>/dev/null) || {
+  echo "  ERROR: API responded but didn't return valid stats JSON."
+  echo "  Check your --url — a proxy or wrong host may be intercepting."
+  exit 1
+}
 echo "  Connected: $MSG_COUNT messages in database"
 
 # --- Step 3: Add MCP server ---
 echo "[3/6] Configuring MCP server..."
 # Check if already configured
-EXISTING=$(claude mcp list 2>/dev/null | grep -c "bmfote-memory" || true)
+EXISTING=$(claude mcp list 2>/dev/null | grep -c '^bmfote-memory:' || true)
 if [ "$EXISTING" -gt 0 ]; then
   echo "  MCP server 'bmfote-memory' already configured — removing old entry"
   claude mcp remove -s user bmfote-memory 2>/dev/null || true

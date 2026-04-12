@@ -11,11 +11,14 @@ Cloud-synced experiential memory for AI agents, powered by Turso (libSQL).
 
 ## Key Files
 
-- `engine/server.py` — API server (port 8026 during dev, port 8025 is the existing system)
+- `engine/server.py` — API server (port 8026 during dev)
+- `engine/mcp_server.py` — FastMCP tools; calls shared query functions from server.py
+- `engine/db.py` — Shared libSQL connection layer; `is_remote_db()` switches between embedded replica (local dev) and direct Turso (Docker/cloud)
 - `engine/schema.sql` — Turso-compatible schema (FTS5 + triggers)
-- `engine/sync_conversations.py` — Incremental JSONL → Turso sync
-- `engine/sync_vault.py` — Obsidian vault markdown → Turso sync
-- `engine/seed_turso.py` — One-time migration from local SQLite to Turso
+- `engine/sync_conversations.py` — Incremental JSONL → Turso sync (local dev utility)
+- `engine/sync_vault.py` — Obsidian vault markdown → Turso sync (local dev utility)
+- `Dockerfile` — Deployment artifact; any Docker-compatible host (Railway/Fly/Render/bare Docker)
+- `installer/setup.sh` — Per-machine Claude Code client config
 - `.env` — Turso credentials (TURSO_DATABASE_URL, TURSO_AUTH_TOKEN, PORT)
 
 ## Development
@@ -25,10 +28,10 @@ source .venv/bin/activate  # Python 3.12 (libsql lacks 3.14 wheels)
 python -m engine.server    # Starts on PORT from .env (default 8026)
 ```
 
-## Critical Constraint
+## Cloud vs local mode
 
-The existing memory system at `~/claude-conversations-db/` (port 8025) must NOT be modified.
-This system runs alongside it on port 8026 until cutover validation is complete.
+- **Local dev** (no env vars): uses embedded replica at `engine/local-replica.db` with sync to Turso.
+- **Cloud/Docker** (`BMFOTE_REMOTE_DB=1` or `RAILWAY_ENVIRONMENT` set): direct connection to Turso, no local replica. Fails closed if `API_TOKEN` is unset.
 
 ## libsql Quirks
 

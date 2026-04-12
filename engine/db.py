@@ -14,9 +14,18 @@ TURSO_TOKEN = os.getenv("TURSO_AUTH_TOKEN", "")
 DB_PATH = Path(__file__).parent / "local-replica.db"
 
 
+def is_remote_db() -> bool:
+    """True in cloud/Docker mode (direct libSQL), False for local dev (embedded replica).
+
+    RAILWAY_ENVIRONMENT is kept as a backward-compat fallback so existing Railway
+    deployments keep working during the transition to BMFOTE_REMOTE_DB.
+    """
+    return bool(os.getenv("BMFOTE_REMOTE_DB") or os.getenv("RAILWAY_ENVIRONMENT"))
+
+
 def get_connection():
-    """Create libSQL connection. Embedded replica locally, remote on Railway."""
-    if os.getenv("RAILWAY_ENVIRONMENT"):
+    """Create libSQL connection. Embedded replica for local dev, remote in cloud mode."""
+    if is_remote_db():
         return libsql.connect(database=TURSO_URL, auth_token=TURSO_TOKEN)
     else:
         return libsql.connect(
@@ -35,13 +44,13 @@ def get_conn():
     global _conn
     if _conn is None:
         _conn = get_connection()
-        if not os.getenv("RAILWAY_ENVIRONMENT"):
+        if not is_remote_db():
             _conn.sync()
     try:
         _conn.execute("SELECT 1")
     except Exception:
         _conn = get_connection()
-        if not os.getenv("RAILWAY_ENVIRONMENT"):
+        if not is_remote_db():
             _conn.sync()
     return _conn
 

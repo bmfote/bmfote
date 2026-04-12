@@ -21,7 +21,7 @@ from slowapi.errors import RateLimitExceeded
 from slowapi.middleware import SlowAPIMiddleware
 from slowapi.util import get_remote_address
 
-from engine.db import get_conn, rows_to_dicts, row_to_dict
+from engine.db import get_conn, is_remote_db, rows_to_dicts, row_to_dict
 from engine.mcp_server import mcp
 
 load_dotenv()
@@ -30,7 +30,7 @@ API_TOKEN = os.getenv("API_TOKEN", "")
 PORT = int(os.getenv("PORT", "8026"))
 
 # Fail closed: refuse to start without auth on cloud deploys
-if os.getenv("RAILWAY_ENVIRONMENT") and not API_TOKEN:
+if is_remote_db() and not API_TOKEN:
     raise RuntimeError("API_TOKEN must be set on cloud deploys")
 
 logger = logging.getLogger("bmfote")
@@ -57,7 +57,7 @@ app.mount("/mcp", mcp_app)
 
 # --- Rate limiting ---
 def _get_real_ip(request: Request) -> str:
-    """Get client IP, preferring X-Forwarded-For behind Railway's proxy."""
+    """Get client IP, preferring X-Forwarded-For behind a reverse proxy."""
     forwarded = request.headers.get("x-forwarded-for")
     if forwarded:
         return forwarded.split(",")[0].strip()
@@ -531,7 +531,7 @@ def create_archive(request: Request, archive: ArchiveCreate):
         ))
 
     conn.commit()
-    if not os.getenv("RAILWAY_ENVIRONMENT"):
+    if not is_remote_db():
         conn.sync()
 
     return {
@@ -576,7 +576,7 @@ def create_message(request: Request, msg: MessageCreate):
         msg.content, msg.model, msg.input_tokens, msg.output_tokens, ts,
     ))
     conn.commit()
-    if not os.getenv("RAILWAY_ENVIRONMENT"):
+    if not is_remote_db():
         conn.sync()
 
     return {"uuid": msg.uuid, "status": "ok"}
@@ -609,7 +609,7 @@ def create_session(request: Request, session: SessionCreate):
         session.last_message_at, session.message_count,
     ))
     conn.commit()
-    if not os.getenv("RAILWAY_ENVIRONMENT"):
+    if not is_remote_db():
         conn.sync()
 
     return {"session_id": session.session_id, "status": "ok"}
@@ -624,7 +624,7 @@ def create_session(request: Request, session: SessionCreate):
 def manual_sync(request: Request):
     """Manually trigger embedded replica sync with Turso Cloud."""
     conn = get_conn()
-    if os.getenv("RAILWAY_ENVIRONMENT"):
+    if is_remote_db():
         return {"status": "skipped", "reason": "remote connection, no replica to sync"}
     conn.sync()
     return {"status": "synced"}
