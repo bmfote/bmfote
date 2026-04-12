@@ -8,6 +8,8 @@ from mcp.server.fastmcp.server import TransportSecuritySettings
 from engine.db import is_remote_db
 
 # In remote-DB mode, disable DNS rebinding protection — bearer token gates access.
+# NOTE: passing transport_security=None falls back to defaults which ENABLE
+# protection with only localhost allowed, so we must pass explicit settings.
 _on_cloud = is_remote_db()
 
 mcp = FastMCP(
@@ -15,7 +17,7 @@ mcp = FastMCP(
     streamable_http_path="/",
     transport_security=TransportSecuritySettings(
         enable_dns_rebinding_protection=not _on_cloud,
-    ) if not _on_cloud else None,
+    ),
 )
 
 
