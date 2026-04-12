@@ -1,11 +1,19 @@
-"""FastMCP server — 5 memory tools for Claude Code, backed by shared query functions."""
+"""FastMCP server — memory tools for Claude Code and Managed Agents.
 
+Exposes 5 read tools (search_memory, find_error, get_context, get_recent,
+search_vault) plus 1 write tool (remember) so agents that can't use client-side
+hooks — Anthropic Managed Agents in particular — can persist their own findings
+into the same memory store other runtimes read from.
+"""
+
+import uuid as _uuid
+from datetime import datetime, timezone
 from typing import Optional
 
 from mcp.server.fastmcp import FastMCP
 from mcp.server.fastmcp.server import TransportSecuritySettings
 
-from engine.db import is_remote_db
+from engine.db import get_conn, is_remote_db
 
 # In remote-DB mode, disable DNS rebinding protection — bearer token gates access.
 # NOTE: passing transport_security=None falls back to defaults which ENABLE
@@ -188,3 +196,68 @@ def search_vault(query: str, project: Optional[str] = None, limit: int = 10) -> 
         )
 
     return "\n".join(lines)
+
+
+@mcp.tool()
+def remember(content: str, topic: str = "", project: str = "managed-agent") -> str:
+    """Save something to long-term memory for future agent sessions to recall.
+
+    Writes into the same conversation store `search_memory` reads from, so a
+    later agent run — your next session, or a different agent scoped to the
+    same project — will surface this via a normal recall query.
+
+    Use this when you want future runs to build on what you just learned.
+    Good for: research findings, decisions made, facts discovered, contacts
+    gathered, short summaries of completed work. Bad for: the entire turn
+    transcript (the orchestrator captures that separately).
+
+    Args:
+        content: The text to persist. Be self-contained and specific — a
+            future reader must understand it without seeing this conversation.
+        topic: Short title (under 80 chars), prefixed to content for
+            searchability. Optional.
+        project: Project scope. Memories in different projects don't cross
+            over in recall. Defaults to "managed-agent".
+    """
+    if not content or not content.strip():
+        return "Nothing to remember — content was empty."
+
+    conn = get_conn()
+    session_id = f"agent-memory-{project}"
+    now = datetime.now(timezone.utc).isoformat()
+
+    # Upsert the session row so the messages.session_id FK resolves.
+    conn.execute(
+        """
+        INSERT INTO sessions (session_id, project, first_message_at, last_message_at, message_count)
+        VALUES (?, ?, ?, ?, 0)
+        ON CONFLICT(session_id) DO UPDATE SET
+            last_message_at = excluded.last_message_at,
+            project = COALESCE(sessions.project, excluded.project)
+        """,
+        (session_id, project, now, now),
+    )
+
+    # Write the memory as an assistant message so it's homogeneous with the
+    # rest of bmfote's data and searchable via search_memory / get_recent.
+    msg_uuid = str(_uuid.uuid4())
+    topic_clean = (topic or "").strip()
+    body = f"[{topic_clean}]\n{content}" if topic_clean else content
+    body = body[:50_000]
+
+    conn.execute(
+        """
+        INSERT INTO messages (uuid, session_id, type, role, content, timestamp)
+        VALUES (?, ?, 'assistant', 'assistant', ?, ?)
+        """,
+        (msg_uuid, session_id, body, now),
+    )
+
+    conn.commit()
+    if not is_remote_db():
+        conn.sync()
+
+    return (
+        f"Memory saved to project '{project}'. "
+        f"Searchable via search_memory. uuid={msg_uuid}"
+    )
