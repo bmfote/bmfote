@@ -31,9 +31,15 @@ _conn = None
 
 
 def get_conn():
-    """Get or create the shared database connection."""
+    """Get or create the shared database connection. Resets on failure."""
     global _conn
     if _conn is None:
+        _conn = get_connection()
+        if not os.getenv("RAILWAY_ENVIRONMENT"):
+            _conn.sync()
+    try:
+        _conn.execute("SELECT 1")
+    except Exception:
         _conn = get_connection()
         if not os.getenv("RAILWAY_ENVIRONMENT"):
             _conn.sync()

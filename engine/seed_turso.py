@@ -3,8 +3,7 @@
 
 Reads from ~/claude-conversations-db/conversations.db (READ-ONLY).
 Writes to Turso embedded replica, then syncs to cloud.
-Order: sessions → messages → tool_uses → vault_docs → vault_links
-Messages batched in groups of 500.
+Order: sessions → messages → vault_docs. Batched in groups of 500.
 """
 
 import os
@@ -83,7 +82,7 @@ def main():
     if existing > 0:
         print(f"Target already has {existing} messages.")
         print("To re-seed, clear the target first:")
-        print("  turso db shell claude-memory 'DELETE FROM tool_uses; DELETE FROM messages; DELETE FROM vault_links; DELETE FROM vault_docs; DELETE FROM sessions;'")
+        print("  turso db shell claude-memory 'DELETE FROM messages; DELETE FROM vault_docs; DELETE FROM sessions;'")
         sys.exit(1)
 
     t0 = time.time()
@@ -99,20 +98,10 @@ def main():
         "model", "input_tokens", "output_tokens", "timestamp"
     ])
 
-    # 3. Tool uses
-    migrate_table(src, dst, "tool_uses", [
-        "message_uuid", "session_id", "tool_name", "tool_input_summary", "timestamp"
-    ])
-
-    # 4. Vault docs
+    # 3. Vault docs
     migrate_table(src, dst, "vault_docs", [
         "file_path", "project", "topic", "date", "outcome", "tags",
         "doc_type", "content", "frontmatter_json", "last_modified", "checksum"
-    ])
-
-    # 5. Vault links
-    migrate_table(src, dst, "vault_links", [
-        "source_path", "target_path", "link_text"
     ])
 
     elapsed = time.time() - t0
@@ -126,7 +115,7 @@ def main():
 
     # Verify counts
     print("\nVerification:")
-    for table in ["sessions", "messages", "tool_uses", "vault_docs", "vault_links"]:
+    for table in ["sessions", "messages", "vault_docs"]:
         src_count = src.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
         dst_count = dst.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
         match = "OK" if src_count == dst_count else "MISMATCH"

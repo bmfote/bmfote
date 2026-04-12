@@ -49,24 +49,6 @@ def extract_content(message: dict) -> str:
     return str(content)
 
 
-def extract_tool_uses(record: dict) -> list:
-    """Extract tool_use blocks from assistant messages."""
-    tools = []
-    message = record.get("message", {})
-    content = message.get("content", [])
-    if not isinstance(content, list):
-        return tools
-    for block in content:
-        if isinstance(block, dict) and block.get("type") == "tool_use":
-            tool_input = block.get("input", {})
-            summary = json.dumps(tool_input)[:200] if tool_input else ""
-            tools.append({
-                "tool_name": block.get("name", "unknown"),
-                "tool_input_summary": summary,
-            })
-    return tools
-
-
 def parse_timestamp(ts: str) -> str:
     """Normalize ISO timestamp."""
     if ts and ts.endswith("Z"):
@@ -111,7 +93,6 @@ def update():
         return
 
     new_messages = 0
-    new_tools = 0
     updated_sessions = set()
 
     jsonl_files = glob.glob(str(CLAUDE_PROJECTS / "*" / "*.jsonl"))
@@ -166,19 +147,6 @@ def update():
                 new_messages += 1
                 updated_sessions.add((session_id, project))
 
-                if rec_type == "assistant":
-                    for tool in extract_tool_uses(record):
-                        conn.execute("""
-                            INSERT INTO tool_uses
-                            (message_uuid, session_id, tool_name, tool_input_summary, timestamp)
-                            VALUES (?, ?, ?, ?, ?)
-                        """, (
-                            uuid, session_id,
-                            tool["tool_name"], tool["tool_input_summary"],
-                            timestamp,
-                        ))
-                        new_tools += 1
-
     # Update session metadata for affected sessions
     for session_id, project in updated_sessions:
         row = conn.execute("""
@@ -196,7 +164,7 @@ def update():
     conn.commit()
     conn.sync()
 
-    print(f"Synced {new_messages} new messages, {new_tools} tool uses across {len(updated_sessions)} sessions")
+    print(f"Synced {new_messages} new messages across {len(updated_sessions)} sessions")
 
 
 if __name__ == "__main__":

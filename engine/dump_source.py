@@ -46,17 +46,9 @@ def main():
         "model", "input_tokens", "output_tokens", "timestamp"
     ])
 
-    dump_table(conn, "tool_uses", [
-        "message_uuid", "session_id", "tool_name", "tool_input_summary", "timestamp"
-    ])
-
     dump_table(conn, "vault_docs", [
         "file_path", "project", "topic", "date", "outcome", "tags",
         "doc_type", "content", "frontmatter_json", "last_modified", "checksum"
-    ])
-
-    dump_table(conn, "vault_links", [
-        "source_path", "target_path", "link_text"
     ])
 
     print("COMMIT;")

@@ -19,13 +19,9 @@
 
 set -euo pipefail
 
-# --- Defaults ---
-DEFAULT_URL="https://bmfote-api-production-7a63.up.railway.app"
-DEFAULT_TOKEN="zvpeA3NiGvjOipgukn9SJ4JHX5oqOche3mMs+eUsPGw="
-
-# --- Parse arguments (all optional — defaults are baked in) ---
-BMFOTE_URL="$DEFAULT_URL"
-BMFOTE_TOKEN="$DEFAULT_TOKEN"
+# --- Parse arguments (--url and --token are required) ---
+BMFOTE_URL=""
+BMFOTE_TOKEN=""
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -33,16 +29,25 @@ while [[ $# -gt 0 ]]; do
     --token) BMFOTE_TOKEN="$2"; shift 2 ;;
     setup) shift ;;  # allow "bmfote setup" — just skip the word
     -h|--help)
-      echo "Usage: npx bmfote setup"
+      echo "Usage: npx bmfote setup --url <API_URL> --token <API_TOKEN>"
       echo ""
-      echo "Options (optional — defaults are built in):"
-      echo "  --url <url>      Override API URL"
-      echo "  --token <token>  Override API token"
+      echo "Options (both required):"
+      echo "  --url <url>      Your bmfote API URL (from 'npx bmfote deploy')"
+      echo "  --token <token>  Your API token (from 'npx bmfote deploy')"
       exit 0
       ;;
     *) echo "Unknown option: $1"; exit 1 ;;
   esac
 done
+
+if [ -z "$BMFOTE_URL" ] || [ -z "$BMFOTE_TOKEN" ]; then
+  echo "ERROR: --url and --token are required."
+  echo ""
+  echo "Usage: npx bmfote setup --url <API_URL> --token <API_TOKEN>"
+  echo ""
+  echo "Run 'npx bmfote deploy' first to get your URL and token."
+  exit 1
+fi
 
 # Strip trailing slash from URL
 BMFOTE_URL="${BMFOTE_URL%/}"
@@ -142,7 +147,6 @@ changed = False
 # Define the bmfote hooks
 bmfote_hooks = {
     "UserPromptSubmit": f"{hooks_dir}/bmfote-post-compaction-context.sh",
-    "PreCompact": f"{hooks_dir}/bmfote-pre-compaction-context.sh",
     "Stop": f"{hooks_dir}/bmfote-stop.sh",
 }
 
@@ -183,6 +187,15 @@ BMFOTE_TOKEN=$BMFOTE_TOKEN
 EOF
 chmod 600 "$CONFIG_FILE"
 echo "  Saved to $CONFIG_FILE"
+
+# Clean up legacy shell profile exports (hooks now source bmfote.env directly)
+for PROFILE in "$HOME/.zshrc" "$HOME/.bashrc" "$HOME/.zprofile" "$HOME/.bash_profile"; do
+  if [ -f "$PROFILE" ] && grep -q 'export BMFOTE_' "$PROFILE"; then
+    sed -i.bak '/^export BMFOTE_URL=/d;/^export BMFOTE_TOKEN=/d' "$PROFILE"
+    rm -f "${PROFILE}.bak"
+    echo "  Cleaned up legacy exports from $(basename "$PROFILE")"
+  fi
+done
 
 # --- Done ---
 echo ""

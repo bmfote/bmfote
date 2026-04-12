@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """Sync Obsidian vault markdown files into Turso via embedded replica."""
 
-import json
 import hashlib
+import json
 import os
 import re
 from pathlib import Path
@@ -29,16 +29,6 @@ def parse_frontmatter(text: str) -> tuple[dict, str]:
     except yaml.YAMLError:
         fm = {}
     return fm, match.group(2)
-
-
-def extract_wikilinks(content: str) -> list[tuple[str, str]]:
-    """Pull [[target|display]] links from markdown."""
-    links = []
-    for match in re.finditer(r'\[\[([^\]|]+)(?:\|([^\]]+))?\]\]', content):
-        target = match.group(1)
-        display = match.group(2) or target
-        links.append((target, display))
-    return links
 
 
 def classify_doc(path: Path, vault_root: Path) -> str:
@@ -75,7 +65,6 @@ def sync():
 
     synced = 0
     skipped = 0
-    links_added = 0
     existing_paths = set()
 
     for md_file in VAULT_ROOT.rglob("*.md"):
@@ -124,27 +113,17 @@ def sync():
         ))
         synced += 1
 
-        # Update wiki-link edges
-        conn.execute("DELETE FROM vault_links WHERE source_path = ?", (rel_path,))
-        for target, display in extract_wikilinks(content):
-            conn.execute(
-                "INSERT INTO vault_links (source_path, target_path, link_text) VALUES (?, ?, ?)",
-                (rel_path, target, display)
-            )
-            links_added += 1
-
     # Remove docs that no longer exist in vault
     db_rows = conn.execute("SELECT file_path FROM vault_docs").fetchall()
     db_paths = {row[0] for row in db_rows}
     removed = db_paths - existing_paths
     for path in removed:
         conn.execute("DELETE FROM vault_docs WHERE file_path = ?", (path,))
-        conn.execute("DELETE FROM vault_links WHERE source_path = ?", (path,))
 
     conn.commit()
     conn.sync()
 
-    print(f"Vault sync: {synced} updated, {skipped} unchanged, {len(removed)} removed, {links_added} links")
+    print(f"Vault sync: {synced} updated, {skipped} unchanged, {len(removed)} removed")
 
 
 if __name__ == "__main__":

@@ -1,17 +1,13 @@
-"""FastMCP server — 5 memory tools for Claude Code, backed by Turso Cloud."""
+"""FastMCP server — 5 memory tools for Claude Code, backed by shared query functions."""
 
 import os
-from datetime import datetime, timedelta, timezone
 from typing import Optional
 
 from mcp.server.fastmcp import FastMCP
 from mcp.server.fastmcp.server import TransportSecuritySettings
 
-from engine.db import get_conn, rows_to_dicts, row_to_dict
-
-# On Railway (or any cloud deploy), disable DNS rebinding protection
-# since the bearer token already gates all access.
-_on_cloud = bool(os.getenv("RAILWAY_ENVIRONMENT") or os.getenv("PORT"))
+# On Railway, disable DNS rebinding protection — bearer token gates access.
+_on_cloud = bool(os.getenv("RAILWAY_ENVIRONMENT"))
 
 mcp = FastMCP(
     "bmfote-memory",
@@ -20,6 +16,15 @@ mcp = FastMCP(
         enable_dns_rebinding_protection=not _on_cloud,
     ) if not _on_cloud else None,
 )
+
+
+def _get_queries():
+    """Late import to avoid circular dependency (server.py imports mcp from here)."""
+    from engine.server import (
+        query_search, query_similar_error, query_message,
+        query_recent, query_vault_search,
+    )
+    return query_search, query_similar_error, query_message, query_recent, query_vault_search
 
 
 @mcp.tool()
@@ -31,29 +36,13 @@ def search_memory(query: str, limit: int = 20, type: Optional[str] = None) -> st
         limit: Max results (default 20, max 100)
         type: Filter by message type — 'user' or 'assistant'
     """
+    q_search, *_ = _get_queries()
     limit = min(limit, 100)
-    conn = get_conn()
 
-    sql = """
-        SELECT m.uuid, m.session_id, m.type, m.role, m.timestamp, m.model,
-               s.project,
-               snippet(messages_fts, 0, '>>>', '<<<', '...', 40) as snippet,
-               bm25(messages_fts) as rank
-        FROM messages_fts f
-        JOIN messages m ON f.rowid = m.id
-        LEFT JOIN sessions s ON m.session_id = s.session_id
-        WHERE messages_fts MATCH ?
-    """
-    params: list = [query]
-
-    if type:
-        sql += " AND m.type = ?"
-        params.append(type)
-
-    sql += " ORDER BY rank LIMIT ?"
-    params.append(limit)
-
-    results = rows_to_dicts(conn.execute(sql, tuple(params)))
+    try:
+        results = q_search(query, limit, type)
+    except Exception:
+        return f"Invalid search query: {query}"
 
     if not results:
         return f"No results for: {query}"
@@ -76,43 +65,27 @@ def find_error(error_text: str, limit: int = 5) -> str:
         error_text: Error message or keywords to search for
         limit: Max results (default 5, max 20)
     """
+    _, q_error, *_ = _get_queries()
     limit = min(limit, 20)
-    conn = get_conn()
 
-    error_matches = rows_to_dicts(conn.execute("""
-        SELECT m.uuid, m.session_id, m.content, m.timestamp,
-               s.project,
-               bm25(messages_fts) as rank
-        FROM messages_fts f
-        JOIN messages m ON f.rowid = m.id
-        LEFT JOIN sessions s ON m.session_id = s.session_id
-        WHERE messages_fts MATCH ?
-          AND m.type = 'user'
-        ORDER BY rank
-        LIMIT ?
-    """, (error_text, limit)))
+    try:
+        results = q_error(error_text, limit)
+    except Exception:
+        return f"Invalid search query: {error_text}"
 
-    if not error_matches:
+    if not results:
         return f"No past errors matching: {error_text}"
 
-    lines = [f"Found {len(error_matches)} past error(s) matching: {error_text}\n"]
-    for err in error_matches:
-        solution = row_to_dict(conn.execute("""
-            SELECT content, timestamp
-            FROM messages
-            WHERE parent_uuid = ? AND type = 'assistant'
-            LIMIT 1
-        """, (err["uuid"],)))
-
+    lines = [f"Found {len(results)} past error(s) matching: {error_text}\n"]
+    for err in results:
         project = err.get("project") or "unknown"
-        error_preview = (err["content"] or "")[:600]
+        error_preview = (err["error_context"] or "")[:600]
         lines.append(f"--- Error ({project}, {err['timestamp']}) ---")
         lines.append(error_preview)
 
-        if solution:
-            solution_preview = (solution["content"] or "")[:600]
+        if err.get("solution"):
             lines.append(f"\n  Solution:")
-            lines.append(f"  {solution_preview}")
+            lines.append(f"  {err['solution'][:600]}")
         else:
             lines.append("  (no solution found)")
         lines.append("")
@@ -128,44 +101,26 @@ def get_context(uuid: str, context: int = 1) -> str:
         uuid: Message UUID (from search results)
         context: Number of messages before/after to include (0-10, default 1)
     """
+    _, _, q_message, *_ = _get_queries()
     context = max(0, min(context, 10))
-    conn = get_conn()
 
-    target = row_to_dict(conn.execute("""
-        SELECT m.uuid, m.session_id, m.type, m.role, m.content,
-               m.timestamp, m.model, s.project
-        FROM messages m
-        LEFT JOIN sessions s ON m.session_id = s.session_id
-        WHERE m.uuid = ?
-    """, (uuid,)))
-
-    if not target:
+    result = q_message(uuid, context)
+    if not result:
         return f"Message not found: {uuid}"
 
-    lines = []
-    project = target.get("project") or "unknown"
-    lines.append(f"Message {uuid} — project={project}, {target['type']}, {target['timestamp']}\n")
+    project = result.get("project") or "unknown"
+    lines = [f"Message {uuid} — project={project}, {result['type']}, {result['timestamp']}\n"]
 
-    if context > 0:
-        context_rows = rows_to_dicts(conn.execute("""
-            SELECT uuid, type, role, content, timestamp, model
-            FROM messages
-            WHERE session_id = ? AND uuid != ?
-            ORDER BY timestamp
-        """, (target["session_id"], uuid)))
-
-        before = [m for m in context_rows if m["timestamp"] <= target["timestamp"]]
-        after = [m for m in context_rows if m["timestamp"] > target["timestamp"]]
-
-        for m in before[-context:]:
-            lines.append(f"[before] [{m['type']}] {(m['content'] or '')[:400]}")
+    for m in result.get("before", []):
+        lines.append(f"[before] [{m['type']}] {(m['content'] or '')[:400]}")
+    if result.get("before"):
         lines.append("")
 
-    lines.append(f">>> [{target['type']}] {target['content'] or ''}")
+    lines.append(f">>> [{result['type']}] {result['content'] or ''}")
 
-    if context > 0:
+    if result.get("after"):
         lines.append("")
-        for m in after[:context]:
+        for m in result["after"]:
             lines.append(f"[after] [{m['type']}] {(m['content'] or '')[:400]}")
 
     return "\n".join(lines)
@@ -179,20 +134,11 @@ def get_recent(hours: int = 24, limit: int = 50) -> str:
         hours: How far back to look (default 24, max 168)
         limit: Max results (default 50, max 200)
     """
+    *_, q_recent, _ = _get_queries()
     hours = min(hours, 168)
     limit = min(limit, 200)
-    conn = get_conn()
 
-    cutoff = (datetime.now(timezone.utc) - timedelta(hours=hours)).isoformat()
-
-    results = rows_to_dicts(conn.execute("""
-        SELECT m.uuid, m.session_id, m.type, m.role, m.content, m.timestamp,
-               s.project
-        FROM messages m
-        LEFT JOIN sessions s ON m.session_id = s.session_id
-        WHERE m.timestamp > ?
-        ORDER BY m.timestamp DESC LIMIT ?
-    """, (cutoff, limit)))
+    results = q_recent(hours, limit)
 
     if not results:
         return f"No messages in the last {hours} hours."
@@ -215,28 +161,13 @@ def search_vault(query: str, project: Optional[str] = None, limit: int = 10) -> 
         project: Filter by project name (optional)
         limit: Max results (default 10, max 50)
     """
+    *_, q_vault = _get_queries()
     limit = min(limit, 50)
-    conn = get_conn()
 
-    sql = """
-        SELECT v.file_path, v.project, v.topic, v.date, v.outcome,
-               v.tags, v.doc_type,
-               snippet(vault_fts, 2, '>>>', '<<<', '...', 40) as snippet,
-               bm25(vault_fts, 10.0, 5.0, 1.0, 3.0) as rank
-        FROM vault_fts f
-        JOIN vault_docs v ON f.rowid = v.id
-        WHERE vault_fts MATCH ?
-    """
-    params: list = [query]
-
-    if project:
-        sql += " AND v.project = ?"
-        params.append(project)
-
-    sql += " ORDER BY rank LIMIT ?"
-    params.append(limit)
-
-    results = rows_to_dicts(conn.execute(sql, tuple(params)))
+    try:
+        results = q_vault(query, project, limit=limit)
+    except Exception:
+        return f"Invalid search query: {query}"
 
     if not results:
         return f"No vault docs matching: {query}"

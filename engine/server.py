@@ -15,7 +15,7 @@ from dotenv import load_dotenv
 from fastapi import FastAPI, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from slowapi import Limiter
 from slowapi.errors import RateLimitExceeded
 from slowapi.middleware import SlowAPIMiddleware
@@ -28,6 +28,10 @@ load_dotenv()
 
 API_TOKEN = os.getenv("API_TOKEN", "")
 PORT = int(os.getenv("PORT", "8026"))
+
+# Fail closed: refuse to start without auth on cloud deploys
+if os.getenv("RAILWAY_ENVIRONMENT") and not API_TOKEN:
+    raise RuntimeError("API_TOKEN must be set on cloud deploys")
 
 logger = logging.getLogger("bmfote")
 logging.basicConfig(
@@ -127,18 +131,16 @@ async def logging_middleware(request: Request, call_next):
     return response
 
 
+@app.get("/health")
+def health():
+    return {"status": "ok"}
+
+
 # =============================================================
-# CONVERSATION SEARCH ENDPOINTS
+# QUERY FUNCTIONS — shared by REST endpoints and MCP tools
 # =============================================================
 
-@app.get("/api/search")
-@limiter.limit("60/minute")
-def search_messages(
-    request: Request,
-    q: str,
-    limit: int = Query(default=20, le=100),
-    type: str = Query(default=None, description="Filter by 'user' or 'assistant'"),
-):
+def query_search(q: str, limit: int = 20, type: str = None):
     """Full-text search over conversation messages with BM25 ranking."""
     conn = get_conn()
     sql = """
@@ -152,24 +154,15 @@ def search_messages(
         WHERE messages_fts MATCH ?
     """
     params: list = [q]
-
     if type:
         sql += " AND m.type = ?"
         params.append(type)
-
     sql += " ORDER BY rank LIMIT ?"
     params.append(limit)
-
     return rows_to_dicts(conn.execute(sql, tuple(params)))
 
 
-@app.get("/api/similar-error")
-@limiter.limit("60/minute")
-def similar_error(
-    request: Request,
-    error: str,
-    limit: int = Query(default=5, le=20),
-):
+def query_similar_error(error: str, limit: int = 5):
     """Find past errors and their solutions."""
     conn = get_conn()
     error_matches = rows_to_dicts(conn.execute("""
@@ -193,25 +186,18 @@ def similar_error(
             WHERE parent_uuid = ? AND type = 'assistant'
             LIMIT 1
         """, (err["uuid"],)))
-
         results.append({
             "error_context": err["content"][:800],
             "project": err["project"],
             "timestamp": err["timestamp"],
             "session_id": err["session_id"],
+            "uuid": err["uuid"],
             "solution": solution["content"][:800] if solution else None,
         })
-
     return results
 
 
-@app.get("/api/message/{uuid}")
-@limiter.limit("60/minute")
-def get_message(
-    request: Request,
-    uuid: str,
-    context: int = Query(default=1, ge=0, le=10),
-):
+def query_message(uuid: str, context: int = 1):
     """Get full message content by UUID, with optional surrounding context."""
     conn = get_conn()
     target = row_to_dict(conn.execute("""
@@ -223,7 +209,7 @@ def get_message(
     """, (uuid,)))
 
     if not target:
-        return JSONResponse(status_code=404, content={"error": "message not found"})
+        return None
 
     if context == 0:
         return target
@@ -238,21 +224,10 @@ def get_message(
     before = [m for m in context_rows if m["timestamp"] <= target["timestamp"]]
     after = [m for m in context_rows if m["timestamp"] > target["timestamp"]]
 
-    return {
-        **target,
-        "before": before[-context:],
-        "after": after[:context],
-    }
+    return {**target, "before": before[-context:], "after": after[:context]}
 
 
-@app.get("/api/recent")
-@limiter.limit("60/minute")
-def recent_messages(
-    request: Request,
-    hours: int = Query(default=24, le=168),
-    limit: int = Query(default=50, le=200),
-    session_id: str = Query(default=None),
-):
+def query_recent(hours: int = 24, limit: int = 50, session_id: str = None):
     """Get recent messages, optionally filtered by session."""
     conn = get_conn()
     if session_id:
@@ -266,7 +241,6 @@ def recent_messages(
         """
         params: list = [session_id, limit]
     else:
-        # Compute cutoff in Python (portable across SQLite/Turso)
         cutoff = (datetime.now(timezone.utc) - timedelta(hours=hours)).isoformat()
         sql = """
             SELECT m.uuid, m.session_id, m.type, m.role, m.content, m.timestamp,
@@ -277,8 +251,90 @@ def recent_messages(
             ORDER BY m.timestamp DESC LIMIT ?
         """
         params = [cutoff, limit]
-
     return rows_to_dicts(conn.execute(sql, tuple(params)))
+
+
+def query_vault_search(q: str, project: str = None, doc_type: str = None,
+                       outcome: str = None, limit: int = 10):
+    """Faceted full-text search over curated vault content with weighted BM25."""
+    conn = get_conn()
+    sql = """
+        SELECT v.file_path, v.project, v.topic, v.date, v.outcome,
+               v.tags, v.doc_type,
+               snippet(vault_fts, 2, '>>>', '<<<', '...', 40) as snippet,
+               bm25(vault_fts, 10.0, 5.0, 1.0, 3.0) as rank
+        FROM vault_fts f
+        JOIN vault_docs v ON f.rowid = v.id
+        WHERE vault_fts MATCH ?
+    """
+    params: list = [q]
+    if project:
+        sql += " AND v.project = ?"
+        params.append(project)
+    if doc_type:
+        sql += " AND v.doc_type = ?"
+        params.append(doc_type)
+    if outcome:
+        sql += " AND v.outcome = ?"
+        params.append(outcome)
+    sql += " ORDER BY rank LIMIT ?"
+    params.append(limit)
+    return rows_to_dicts(conn.execute(sql, tuple(params)))
+
+
+# =============================================================
+# CONVERSATION SEARCH ENDPOINTS
+# =============================================================
+
+@app.get("/api/search")
+@limiter.limit("60/minute")
+def search_messages(
+    request: Request,
+    q: str,
+    limit: int = Query(default=20, le=100),
+    type: str = Query(default=None, description="Filter by 'user' or 'assistant'"),
+):
+    try:
+        return query_search(q, limit, type)
+    except Exception:
+        return JSONResponse(status_code=400, content={"error": "invalid search query"})
+
+
+@app.get("/api/similar-error")
+@limiter.limit("60/minute")
+def similar_error(
+    request: Request,
+    error: str,
+    limit: int = Query(default=5, le=20),
+):
+    try:
+        return query_similar_error(error, limit)
+    except Exception:
+        return JSONResponse(status_code=400, content={"error": "invalid search query"})
+
+
+@app.get("/api/message/{uuid}")
+@limiter.limit("60/minute")
+def get_message(
+    request: Request,
+    uuid: str,
+    context: int = Query(default=1, ge=0, le=10),
+):
+    result = query_message(uuid, context)
+    if result is None:
+        return JSONResponse(status_code=404, content={"error": "message not found"})
+    return result
+
+
+@app.get("/api/recent")
+@limiter.limit("60/minute")
+def recent_messages(
+    request: Request,
+    hours: int = Query(default=24, le=168),
+    limit: int = Query(default=50, le=200),
+    session_id: str = Query(default=None),
+):
+    return query_recent(hours, limit, session_id)
 
 
 @app.get("/api/project/{project_name}")
@@ -294,10 +350,10 @@ def project_messages(
         SELECT m.uuid, m.session_id, m.type, m.content, m.timestamp
         FROM messages m
         JOIN sessions s ON m.session_id = s.session_id
-        WHERE s.project LIKE ?
+        WHERE s.project = ?
         ORDER BY m.timestamp DESC
         LIMIT ?
-    """, (f"%{project_name}%", limit)))
+    """, (project_name, limit)))
 
 
 @app.get("/api/stats")
@@ -307,31 +363,18 @@ def stats(request: Request):
     conn = get_conn()
     msg_count = conn.execute("SELECT COUNT(*) FROM messages").fetchone()[0]
     session_count = conn.execute("SELECT COUNT(*) FROM sessions").fetchone()[0]
-    tool_count = conn.execute("SELECT COUNT(*) FROM tool_uses").fetchone()[0]
     vault_count = conn.execute("SELECT COUNT(*) FROM vault_docs").fetchone()[0]
-    vault_link_count = conn.execute("SELECT COUNT(*) FROM vault_links").fetchone()[0]
 
     date_range = conn.execute(
         "SELECT MIN(timestamp), MAX(timestamp) FROM messages"
     ).fetchone()
 
-    top_tools = rows_to_dicts(conn.execute("""
-        SELECT tool_name, COUNT(*) as uses
-        FROM tool_uses
-        GROUP BY tool_name
-        ORDER BY uses DESC
-        LIMIT 10
-    """))
-
     return {
         "messages": msg_count,
         "sessions": session_count,
-        "tool_uses": tool_count,
         "vault_docs": vault_count,
-        "vault_links": vault_link_count,
         "first_message": date_range[0],
         "last_message": date_range[1],
-        "top_tools": top_tools,
     }
 
 
@@ -349,33 +392,10 @@ def vault_search(
     outcome: str = Query(default=None),
     limit: int = Query(default=10, le=50),
 ):
-    """Faceted full-text search over curated vault content with weighted BM25."""
-    conn = get_conn()
-    sql = """
-        SELECT v.file_path, v.project, v.topic, v.date, v.outcome,
-               v.tags, v.doc_type,
-               snippet(vault_fts, 2, '>>>', '<<<', '...', 40) as snippet,
-               bm25(vault_fts, 10.0, 5.0, 1.0, 3.0) as rank
-        FROM vault_fts f
-        JOIN vault_docs v ON f.rowid = v.id
-        WHERE vault_fts MATCH ?
-    """
-    params: list = [q]
-
-    if project:
-        sql += " AND v.project = ?"
-        params.append(project)
-    if doc_type:
-        sql += " AND v.doc_type = ?"
-        params.append(doc_type)
-    if outcome:
-        sql += " AND v.outcome = ?"
-        params.append(outcome)
-
-    sql += " ORDER BY rank LIMIT ?"
-    params.append(limit)
-
-    return rows_to_dicts(conn.execute(sql, tuple(params)))
+    try:
+        return query_vault_search(q, project, doc_type, outcome, limit)
+    except Exception:
+        return JSONResponse(status_code=400, content={"error": "invalid search query"})
 
 
 @app.get("/api/vault/doc/{file_path:path}")
@@ -405,14 +425,12 @@ def vault_stats(request: Request):
     by_outcome = rows_to_dicts(conn.execute(
         "SELECT outcome, COUNT(*) as count FROM vault_docs WHERE outcome IS NOT NULL GROUP BY outcome"
     ))
-    link_count = conn.execute("SELECT COUNT(*) FROM vault_links").fetchone()[0]
 
     return {
         "total_docs": sum(r["count"] for r in by_type),
         "by_type": by_type,
         "by_project": by_project,
         "by_outcome": by_outcome,
-        "total_links": link_count,
     }
 
 
@@ -455,7 +473,7 @@ class ArchiveCreate(BaseModel):
     date: str
     outcome: str
     tags: List[str] = []
-    content: str
+    content: str = Field(max_length=100000)
     doc_type: str = "session"
     workflows_touched: List[str] = []
 
@@ -529,7 +547,7 @@ def create_archive(request: Request, archive: ArchiveCreate):
 class MessageCreate(BaseModel):
     session_id: str
     uuid: str
-    content: Optional[str] = None
+    content: Optional[str] = Field(default=None, max_length=50000)
     type: str = "user"
     role: Optional[str] = None
     parent_uuid: Optional[str] = None
