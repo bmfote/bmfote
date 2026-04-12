@@ -1,5 +1,10 @@
 #!/usr/bin/env python3
-"""Sync Obsidian vault markdown files into Turso via embedded replica."""
+"""Sync Obsidian vault markdown files straight into Turso Cloud.
+
+Uses a direct Turso HTTP connection (no embedded replica) so this script
+never contends with the server process for the local-replica.db WAL.
+A crash here cannot poison the server's replica file.
+"""
 
 import hashlib
 import json
@@ -13,10 +18,11 @@ from dotenv import load_dotenv
 
 load_dotenv(Path(__file__).parent.parent / ".env")
 
-VAULT_ROOT = Path.home() / "dev" / "claude-vault"
+VAULT_ROOT = Path(
+    os.getenv("BMFOTE_VAULT_ROOT", str(Path.home() / "dev" / "claude-vault"))
+).expanduser()
 TURSO_URL = os.getenv("TURSO_DATABASE_URL", "")
 TURSO_TOKEN = os.getenv("TURSO_AUTH_TOKEN", "")
-REPLICA_PATH = Path(__file__).parent / "local-replica.db"
 
 
 def parse_frontmatter(text: str) -> tuple[dict, str]:
@@ -46,19 +52,13 @@ def classify_doc(path: Path, vault_root: Path) -> str:
 
 
 def get_conn():
-    conn = libsql.connect(
-        database=str(REPLICA_PATH),
-        sync_url=TURSO_URL,
-        auth_token=TURSO_TOKEN,
-    )
-    conn.sync()
-    return conn
+    return libsql.connect(database=TURSO_URL, auth_token=TURSO_TOKEN)
 
 
 def sync():
     if not VAULT_ROOT.exists():
         print(f"Vault root not found: {VAULT_ROOT}")
-        print("Set VAULT_ROOT or ensure ~/dev/claude-vault exists.")
+        print("Set BMFOTE_VAULT_ROOT or ensure ~/dev/claude-vault exists.")
         return
 
     conn = get_conn()
@@ -121,7 +121,6 @@ def sync():
         conn.execute("DELETE FROM vault_docs WHERE file_path = ?", (path,))
 
     conn.commit()
-    conn.sync()
 
     print(f"Vault sync: {synced} updated, {skipped} unchanged, {len(removed)} removed")
 

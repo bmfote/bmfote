@@ -39,19 +39,35 @@ def get_connection():
 _conn = None
 
 
+def _open_and_heal():
+    """Open a libSQL connection, sync, and drain any stuck WAL frames.
+
+    A `PRAGMA wal_checkpoint(TRUNCATE)` on a freshly-opened connection
+    clears any frames left behind by a previous writer that died mid-sync
+    (historically, a cron script sharing the same replica file). Harmless
+    when the WAL is already clean — returns (0, 0, 0) in that case.
+    """
+    conn = get_connection()
+    if not is_remote_db():
+        conn.sync()
+        try:
+            conn.execute("PRAGMA wal_checkpoint(TRUNCATE)").fetchone()
+        except Exception:
+            # Non-fatal: the checkpoint is a nice-to-have, not a hard
+            # requirement. If it fails, writes will surface the real error.
+            pass
+    return conn
+
+
 def get_conn():
     """Get or create the shared database connection. Resets on failure."""
     global _conn
     if _conn is None:
-        _conn = get_connection()
-        if not is_remote_db():
-            _conn.sync()
+        _conn = _open_and_heal()
     try:
         _conn.execute("SELECT 1")
     except Exception:
-        _conn = get_connection()
-        if not is_remote_db():
-            _conn.sync()
+        _conn = _open_and_heal()
     return _conn
 
 
