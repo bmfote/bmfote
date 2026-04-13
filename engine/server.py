@@ -1,15 +1,12 @@
 #!/usr/bin/env python3
 """FastAPI search server for Claude memory — Turso Cloud (libSQL embedded replica)."""
 
-import hashlib
-import json
 import logging
 import os
-import re
 import time
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
-from typing import List, Optional
+from typing import Optional
 
 from dotenv import load_dotenv
 from fastapi import FastAPI, Query, Request
@@ -86,15 +83,6 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
-
-
-def slugify(text: str) -> str:
-    """Convert text to URL-friendly slug."""
-    text = text.lower().strip()
-    text = re.sub(r"[^\w\s-]", "", text)
-    text = re.sub(r"[\s_]+", "-", text)
-    text = re.sub(r"-+", "-", text)
-    return text[:60].rstrip("-")
 
 
 # =============================================================
@@ -254,34 +242,6 @@ def query_recent(hours: int = 24, limit: int = 50, session_id: str = None):
     return rows_to_dicts(conn.execute(sql, tuple(params)))
 
 
-def query_vault_search(q: str, project: str = None, doc_type: str = None,
-                       outcome: str = None, limit: int = 10):
-    """Faceted full-text search over curated vault content with weighted BM25."""
-    conn = get_conn()
-    sql = """
-        SELECT v.file_path, v.project, v.topic, v.date, v.outcome,
-               v.tags, v.doc_type,
-               snippet(vault_fts, 2, '>>>', '<<<', '...', 40) as snippet,
-               bm25(vault_fts, 10.0, 5.0, 1.0, 3.0) as rank
-        FROM vault_fts f
-        JOIN vault_docs v ON f.rowid = v.id
-        WHERE vault_fts MATCH ?
-    """
-    params: list = [q]
-    if project:
-        sql += " AND v.project = ?"
-        params.append(project)
-    if doc_type:
-        sql += " AND v.doc_type = ?"
-        params.append(doc_type)
-    if outcome:
-        sql += " AND v.outcome = ?"
-        params.append(outcome)
-    sql += " ORDER BY rank LIMIT ?"
-    params.append(limit)
-    return rows_to_dicts(conn.execute(sql, tuple(params)))
-
-
 # =============================================================
 # CONVERSATION SEARCH ENDPOINTS
 # =============================================================
@@ -363,7 +323,6 @@ def stats(request: Request):
     conn = get_conn()
     msg_count = conn.execute("SELECT COUNT(*) FROM messages").fetchone()[0]
     session_count = conn.execute("SELECT COUNT(*) FROM sessions").fetchone()[0]
-    vault_count = conn.execute("SELECT COUNT(*) FROM vault_docs").fetchone()[0]
 
     date_range = conn.execute(
         "SELECT MIN(timestamp), MAX(timestamp) FROM messages"
@@ -372,171 +331,8 @@ def stats(request: Request):
     return {
         "messages": msg_count,
         "sessions": session_count,
-        "vault_docs": vault_count,
         "first_message": date_range[0],
         "last_message": date_range[1],
-    }
-
-
-# =============================================================
-# VAULT SEARCH ENDPOINTS
-# =============================================================
-
-@app.get("/api/vault/search")
-@limiter.limit("60/minute")
-def vault_search(
-    request: Request,
-    q: str,
-    project: str = Query(default=None),
-    doc_type: str = Query(default=None),
-    outcome: str = Query(default=None),
-    limit: int = Query(default=10, le=50),
-):
-    try:
-        return query_vault_search(q, project, doc_type, outcome, limit)
-    except Exception as e:
-        return JSONResponse(status_code=400, content={"error": f"invalid search query: {e}"})
-
-
-@app.get("/api/vault/doc/{file_path:path}")
-@limiter.limit("60/minute")
-def vault_doc(request: Request, file_path: str):
-    """Get full vault document content by path."""
-    conn = get_conn()
-    result = row_to_dict(conn.execute(
-        "SELECT * FROM vault_docs WHERE file_path = ?", (file_path,)
-    ))
-    if not result:
-        return JSONResponse(status_code=404, content={"error": "not found"})
-    return result
-
-
-@app.get("/api/vault/stats")
-@limiter.limit("60/minute")
-def vault_stats(request: Request):
-    """Vault statistics."""
-    conn = get_conn()
-    by_type = rows_to_dicts(conn.execute(
-        "SELECT doc_type, COUNT(*) as count FROM vault_docs GROUP BY doc_type"
-    ))
-    by_project = rows_to_dicts(conn.execute(
-        "SELECT project, COUNT(*) as count FROM vault_docs WHERE project IS NOT NULL GROUP BY project"
-    ))
-    by_outcome = rows_to_dicts(conn.execute(
-        "SELECT outcome, COUNT(*) as count FROM vault_docs WHERE outcome IS NOT NULL GROUP BY outcome"
-    ))
-
-    return {
-        "total_docs": sum(r["count"] for r in by_type),
-        "by_type": by_type,
-        "by_project": by_project,
-        "by_outcome": by_outcome,
-    }
-
-
-@app.get("/api/vault/list")
-@limiter.limit("60/minute")
-def vault_list(
-    request: Request,
-    project: str = Query(default=None),
-    doc_type: str = Query(default=None),
-    outcome: str = Query(default=None),
-    limit: int = Query(default=50, le=200),
-):
-    """List vault documents with optional filters."""
-    conn = get_conn()
-    sql = """
-        SELECT file_path, project, topic, date, outcome, tags, doc_type
-        FROM vault_docs WHERE 1=1
-    """
-    params: list = []
-
-    if project:
-        sql += " AND project = ?"
-        params.append(project)
-    if doc_type:
-        sql += " AND doc_type = ?"
-        params.append(doc_type)
-    if outcome:
-        sql += " AND outcome = ?"
-        params.append(outcome)
-
-    sql += " ORDER BY date DESC LIMIT ?"
-    params.append(limit)
-
-    return rows_to_dicts(conn.execute(sql, tuple(params)))
-
-
-class ArchiveCreate(BaseModel):
-    project: str
-    topic: str
-    date: str = Field(default_factory=lambda: datetime.now(timezone.utc).date().isoformat())
-    outcome: str = "in-progress"
-    tags: List[str] = []
-    content: str = Field(max_length=100000)
-    doc_type: str = "session"
-    workflows_touched: List[str] = []
-
-
-@app.post("/api/vault/archive")
-@limiter.limit("20/minute")
-def create_archive(request: Request, archive: ArchiveCreate):
-    """Create a new session archive directly in the vault_docs table."""
-    conn = get_conn()
-    slug = slugify(archive.topic)
-    file_path = f"{archive.project}/sessions/{archive.date}_{slug}.md"
-
-    frontmatter = {
-        "project": archive.project,
-        "topic": archive.topic,
-        "date": archive.date,
-        "outcome": archive.outcome,
-        "tags": archive.tags,
-        "archived": archive.date,
-    }
-    if archive.workflows_touched:
-        frontmatter["workflows_touched"] = archive.workflows_touched
-
-    checksum = hashlib.md5(archive.content.encode()).hexdigest()
-
-    existing = row_to_dict(conn.execute(
-        "SELECT id FROM vault_docs WHERE file_path = ?", (file_path,)
-    ))
-
-    if existing:
-        conn.execute("""
-            UPDATE vault_docs SET
-                project=?, topic=?, date=?, outcome=?, tags=?,
-                doc_type=?, content=?, frontmatter_json=?,
-                last_modified=?, checksum=?
-            WHERE file_path=?
-        """, (
-            archive.project, archive.topic, archive.date,
-            archive.outcome, json.dumps(archive.tags),
-            archive.doc_type, archive.content,
-            json.dumps(frontmatter), time.time(), checksum,
-            file_path,
-        ))
-    else:
-        conn.execute("""
-            INSERT INTO vault_docs (
-                file_path, project, topic, date, outcome, tags,
-                doc_type, content, frontmatter_json, last_modified, checksum
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        """, (
-            file_path, archive.project, archive.topic, archive.date,
-            archive.outcome, json.dumps(archive.tags),
-            archive.doc_type, archive.content,
-            json.dumps(frontmatter), time.time(), checksum,
-        ))
-
-    conn.commit()
-    if not is_remote_db():
-        conn.sync()
-
-    return {
-        "file_path": file_path,
-        "status": "updated" if existing else "created",
     }
 
 

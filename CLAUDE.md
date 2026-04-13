@@ -4,7 +4,7 @@ Cloud-synced experiential memory for AI agents, powered by Turso (libSQL).
 
 ## Architecture
 
-- **Engine**: FastAPI server at `engine/server.py` — 12 REST endpoints (search, vault, sync)
+- **Engine**: FastAPI server at `engine/server.py` — 9 REST endpoints (search, messages, sync)
 - **Database**: Turso Cloud with local embedded replica for fast reads
 - **FTS**: Standard SQLite FTS5 (NOT Tantivy) — `bm25()`, `snippet()`, `MATCH` syntax
 - **Connection**: `libsql_experimental` Python SDK (requires tuples for params, not lists)
@@ -16,7 +16,6 @@ Cloud-synced experiential memory for AI agents, powered by Turso (libSQL).
 - `engine/db.py` — Shared libSQL connection layer; `is_remote_db()` switches between embedded replica (local dev) and direct Turso (Docker/cloud)
 - `engine/schema.sql` — Turso-compatible schema (FTS5 + triggers)
 - `engine/sync_conversations.py` — Incremental JSONL → Turso sync (local dev utility)
-- `engine/sync_vault.py` — Obsidian vault markdown → Turso sync (local dev utility)
 - `Dockerfile` — Deployment artifact; any Docker-compatible host (Railway/Fly/Render/bare Docker)
 - `installer/setup.sh` — Per-machine Claude Code client config
 - `.env` — Turso credentials (TURSO_DATABASE_URL, TURSO_AUTH_TOKEN, PORT)

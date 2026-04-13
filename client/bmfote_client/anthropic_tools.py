@@ -76,22 +76,6 @@ TOOL_SPECS: List[dict] = [
             },
         },
     },
-    {
-        "name": "search_vault",
-        "description": (
-            "Search the curated knowledge base (session archives, notes, docs). "
-            "Different from search_memory — vault docs are hand-curated summaries, not raw turns."
-        ),
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "query": {"type": "string", "description": "Search terms"},
-                "project": {"type": "string", "description": "Filter by project (optional)"},
-                "limit": {"type": "integer", "description": "Max results (default 5, max 20)"},
-            },
-            "required": ["query"],
-        },
-    },
 ]
 
 
@@ -164,24 +148,6 @@ def _fmt_recent(hours: int, results: List[dict]) -> str:
     return "\n".join(lines)
 
 
-def _fmt_vault(query: str, results: List[dict]) -> str:
-    if not results:
-        return f"No vault docs matching: {query}"
-    lines = [f"Found {len(results)} vault docs for: {query}", ""]
-    for r in results:
-        outcome = r.get("outcome") or ""
-        tags = r.get("tags") or ""
-        snippet = _strip_fts_markers(r.get("snippet") or "")
-        lines.append(
-            f"- [{r.get('doc_type','doc')}] {r.get('topic','')}\n"
-            f"  project={r.get('project','')}  date={r.get('date','')}  outcome={outcome}\n"
-            f"  tags={tags}\n"
-            f"  {snippet}\n"
-            f"  path={r.get('file_path','')}"
-        )
-    return "\n".join(lines)
-
-
 # =============================================================
 # Dispatcher
 # =============================================================
@@ -231,17 +197,6 @@ def handle_tool_use(block: Any, client: Client) -> str:
         return _fmt_recent(
             hours,
             client.recent(hours=hours, limit=min(int(inp.get("limit", 20)), 100)),
-        )
-
-    if name == "search_vault":
-        query = inp.get("query", "")
-        return _fmt_vault(
-            query,
-            client.vault_search(
-                query,
-                project=inp.get("project"),
-                limit=min(int(inp.get("limit", 5)), 20),
-            ),
         )
 
     return f"Unknown bmfote tool: {name}"

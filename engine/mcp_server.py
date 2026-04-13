@@ -1,8 +1,8 @@
 """FastMCP server — memory tools for Claude Code and Managed Agents.
 
-Exposes 5 read tools (search_memory, find_error, get_context, get_recent,
-search_vault) plus 1 write tool (remember) so agents that can't use client-side
-hooks — Anthropic Managed Agents in particular — can persist their own findings
+Exposes 4 read tools (search_memory, find_error, get_context, get_recent)
+plus 1 write tool (remember) so agents that can't use client-side hooks —
+Anthropic Managed Agents in particular — can persist their own findings
 into the same memory store other runtimes read from.
 """
 
@@ -32,10 +32,9 @@ mcp = FastMCP(
 def _get_queries():
     """Late import to avoid circular dependency (server.py imports mcp from here)."""
     from engine.server import (
-        query_search, query_similar_error, query_message,
-        query_recent, query_vault_search,
+        query_search, query_similar_error, query_message, query_recent,
     )
-    return query_search, query_similar_error, query_message, query_recent, query_vault_search
+    return query_search, query_similar_error, query_message, query_recent
 
 
 @mcp.tool()
@@ -145,7 +144,7 @@ def get_recent(hours: int = 24, limit: int = 50) -> str:
         hours: How far back to look (default 24, max 168)
         limit: Max results (default 50, max 200)
     """
-    *_, q_recent, _ = _get_queries()
+    *_, q_recent = _get_queries()
     hours = min(hours, 168)
     limit = min(limit, 200)
 
@@ -159,41 +158,6 @@ def get_recent(hours: int = 24, limit: int = 50) -> str:
         project = r.get("project") or "unknown"
         preview = (r["content"] or "")[:120].replace("\n", " ")
         lines.append(f"- [{r['type']}] {preview}  (project={project}, {r['timestamp']})")
-
-    return "\n".join(lines)
-
-
-@mcp.tool()
-def search_vault(query: str, project: Optional[str] = None, limit: int = 10) -> str:
-    """Search the curated knowledge base (session archives, notes, docs).
-
-    Args:
-        query: FTS5 search query
-        project: Filter by project name (optional)
-        limit: Max results (default 10, max 50)
-    """
-    *_, q_vault = _get_queries()
-    limit = min(limit, 50)
-
-    try:
-        results = q_vault(query, project, limit=limit)
-    except Exception:
-        return f"Invalid search query: {query}"
-
-    if not results:
-        return f"No vault docs matching: {query}"
-
-    lines = [f"Found {len(results)} vault docs for: {query}\n"]
-    for r in results:
-        outcome = r.get("outcome") or ""
-        tags = r.get("tags") or ""
-        lines.append(
-            f"- [{r['doc_type']}] {r['topic']}\n"
-            f"  project={r['project']}  date={r['date']}  outcome={outcome}\n"
-            f"  tags={tags}\n"
-            f"  {r['snippet']}\n"
-            f"  path={r['file_path']}"
-        )
 
     return "\n".join(lines)
 

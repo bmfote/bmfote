@@ -112,17 +112,18 @@ else:
     print('')
 " 2>/dev/null || echo "")
 
-SESSIONS=$(curl -s --connect-timeout 2 --max-time 3 -H "$AUTH" \
-  "$BMFOTE_URL/api/vault/list?project=$PROJECT&doc_type=session&limit=3" 2>/dev/null)
+PROJECT_MSGS=$(curl -s --connect-timeout 2 --max-time 3 -H "$AUTH" \
+  "$BMFOTE_URL/api/project/$PROJECT?limit=3" 2>/dev/null)
 
-SESSION_CONTEXT=$(echo "$SESSIONS" | python3 -c "
+SESSION_CONTEXT=$(echo "$PROJECT_MSGS" | python3 -c "
 import sys, json
-sessions = json.load(sys.stdin)
-if sessions:
-    label = sessions[0].get('project', 'recent')
-    lines = [f'Last {label} sessions:']
-    for s in sessions:
-        lines.append(f'  [{s[\"date\"]}] {s[\"topic\"]} ({s[\"outcome\"]})')
+msgs = json.load(sys.stdin)
+if msgs:
+    lines = [f'Recent activity in {\"$PROJECT\" or \"this project\"}:']
+    for m in msgs:
+        ts = (m.get('timestamp') or '')[:10]
+        content = (m.get('content') or '')[:100].replace('\n', ' ')
+        lines.append(f'  [{ts}] {m.get(\"type\",\"?\")}: {content}')
     print('\n'.join(lines))
 " 2>/dev/null)
 

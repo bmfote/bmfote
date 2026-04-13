@@ -80,7 +80,7 @@ session.close()
 
 ### Pattern B — let the agent search on its own (tool use)
 
-Expose bmfote as a set of tools the model can call mid-turn. Five tools are provided, mirroring the MCP server: `search_memory`, `find_error`, `get_context`, `get_recent`, `search_vault`.
+Expose bmfote as a set of tools the model can call mid-turn. Four tools are provided, mirroring the MCP server: `search_memory`, `find_error`, `get_context`, `get_recent`.
 
 ```python
 import anthropic
@@ -123,14 +123,13 @@ The agent can now *decide* when to recall — if the prompt is small it may skip
 
 ### Direct read methods (if you just want the data)
 
-`Client` exposes the same five endpoints as plain Python calls — useful for scripting, dashboards, or wiring bmfote into a non-Anthropic loop:
+`Client` exposes the same four endpoints as plain Python calls — useful for scripting, dashboards, or wiring bmfote into a non-Anthropic loop:
 
 ```python
 client.search("query", limit=10)                   # → list[dict]
 client.find_error("connection refused", limit=5)   # → list[dict]
 client.recent(hours=24, limit=50)                  # → list[dict]
 client.get_message(uuid, context=1)                # → dict | None
-client.vault_search("topic", project="foo")        # → list[dict]
 ```
 
 All read methods fail silent on network error (return `[]` or `None` and log a warning).
@@ -155,7 +154,7 @@ asyncio.run(main())
 
 `agent_sdk_hooks` registers callbacks for `UserPromptSubmit`, `PostToolUse`, and `Stop`. User prompts and tool calls (with truncated results) are recorded automatically.
 
-For the **read side** on Agent SDK, wire the bmfote MCP server into `ClaudeAgentOptions.mcp_servers` and the agent gets `search_memory` / `find_error` / `get_context` / `get_recent` / `search_vault` / `remember` as tools automatically — no extra code:
+For the **read side** on Agent SDK, wire the bmfote MCP server into `ClaudeAgentOptions.mcp_servers` and the agent gets `search_memory` / `find_error` / `get_context` / `get_recent` / `remember` as tools automatically — no extra code:
 
 ```python
 options = ClaudeAgentOptions(
@@ -243,7 +242,7 @@ No pre-fetch, no post-write. The agent handles recall and persistence itself thr
 
 ### Tool surface exposed to the agent
 
-Once the MCP server is wired up, the agent sees **6 tools** from bmfote:
+Once the MCP server is wired up, the agent sees **5 tools** from bmfote:
 
 | Tool | Direction | Use |
 |---|---|---|
@@ -251,7 +250,6 @@ Once the MCP server is wired up, the agent sees **6 tools** from bmfote:
 | `find_error` | read | Find past errors and the response that followed |
 | `get_context` | read | Expand a search hit into its surrounding conversation |
 | `get_recent` | read | What was recently worked on? |
-| `search_vault` | read | Search curated knowledge base (session archives) |
 | `remember` | **write** | Save a finding / decision / fact for future sessions to recall |
 
 The `remember` tool writes into the same `messages` table `search_memory` reads from, so there's no split between "what I can write" and "what I can read" — it's one homogeneous memory store.

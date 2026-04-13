@@ -98,21 +98,6 @@ class Client:
     def get_message(self, uuid: str, context: int = 1) -> Optional[dict]:
         return self._get(f"/api/message/{uuid}", {"context": context})
 
-    def vault_search(
-        self,
-        query: str,
-        project: Optional[str] = None,
-        doc_type: Optional[str] = None,
-        limit: int = 5,
-    ) -> List[dict]:
-        params: dict = {"q": query, "limit": limit}
-        if project:
-            params["project"] = project
-        if doc_type:
-            params["doc_type"] = doc_type
-        return self._get("/api/vault/search", params) or []
-
-
 class Session:
     def __init__(self, client: Client, session_id: str, project: str):
         self.client = client
