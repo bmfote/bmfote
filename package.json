@@ -1,9 +1,10 @@
 {
   "name": "bmfote",
-  "version": "0.11.2",
+  "version": "0.11.3",
   "description": "Cloud context for AI agents — drop-in experiential memory accessible across any agent or device",
   "bin": {
-    "bmfote": "./bin/cli.js"
+    "bmfote": "./bin/cli.js",
+    "bmfote-agent": "./bin/bmfote-agent"
   },
   "files": [
     "bin/",

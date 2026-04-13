@@ -4,7 +4,7 @@
 
 <p align="center">
   <a href="LICENSE"><img src="https://img.shields.io/badge/License-AGPL%203.0-blue.svg" alt="License"></a>
-  <a href="package.json"><img src="https://img.shields.io/badge/version-0.11.1-green.svg" alt="Version"></a>
+  <a href="package.json"><img src="https://img.shields.io/badge/version-0.11.3-green.svg" alt="Version"></a>
   <img src="https://img.shields.io/badge/python-%E2%89%A53.12-brightgreen.svg" alt="Python">
   <img src="https://img.shields.io/badge/node-%E2%89%A518-brightgreen.svg" alt="Node">
   <img src="https://img.shields.io/badge/Powered%20by-Turso-4FF8D2.svg" alt="Powered by Turso">
@@ -150,7 +150,23 @@ The agent gets `search_memory`, `find_error`, `get_context`, `get_recent`, and `
 
 ### Anthropic Managed Agents
 
-Managed Agents don't expose client-side hooks, so the integration flips: the agent itself calls `remember` and `search_memory` as MCP tools. One-time setup wires the bmfote MCP server into the agent config and stores `BMFOTE_TOKEN` in an Anthropic vault. See [`client/README.md`](client/README.md#usage--anthropic-managed-agents) for the full pattern.
+Managed Agents don't expose client-side hooks, so the integration flips: the agent itself calls `remember` and `search_memory` as MCP tools against bmfote. bmfote ships a `bmfote-agent` CLI that handles the whole wiring — vault + credential, environment with `allowed_hosts`, agent config with `mcp_servers` + `mcp_toolset` + `always_allow` — in one command.
+
+```bash
+# Create a memory-only agent wired to bmfote (idempotent — reruns are no-ops)
+bmfote-agent create \
+  --name "my agent" \
+  --system "You are a memory retrieval agent backed by bmfote."
+
+# Run it with a prompt; returns the final agent response
+bmfote-agent run <agent_id> "What did we decide about Acme last week?"
+
+# Audit or retrofit an agent created elsewhere
+bmfote-agent doctor <agent_id> --fix
+bmfote-agent list
+```
+
+The CLI reads `BMFOTE_URL`, `BMFOTE_TOKEN` (from `npx bmfote setup`), and `ANTHROPIC_API_KEY` from your shell. Shared resources — a `bmfote-default` vault and `bmfote-default-env` environment — are discovered by name and created on first use, so there is no separate setup step.
 
 All paths write into the same `messages` table as Claude Code sessions. See [`client/README.md`](client/README.md) for the full surface, failure semantics, and limitations.
 
