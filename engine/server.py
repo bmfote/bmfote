@@ -128,8 +128,23 @@ def health():
 # QUERY FUNCTIONS — shared by REST endpoints and MCP tools
 # =============================================================
 
+def _auto_phrase(q: str) -> str:
+    """Wrap bare multi-token queries in quotes so BM25 ranks positional
+    phrase matches instead of bag-of-words token density. Callers passing
+    explicit FTS5 syntax (quotes, booleans, NEAR, prefix*, column filters,
+    grouping) pass through unchanged. Also makes hyphenated tokens work
+    without requiring callers to quote them themselves."""
+    if not q or any(c in q for c in '"*():^'):
+        return q
+    tokens = q.split()
+    if any(op in tokens for op in ("AND", "OR", "NOT", "NEAR")):
+        return q
+    return f'"{q}"'
+
+
 def query_search(q: str, limit: int = 20, type: str = None):
     """Full-text search over conversation messages with BM25 ranking."""
+    q = _auto_phrase(q)
     conn = get_conn()
     sql = """
         SELECT m.uuid, m.session_id, m.type, m.role, m.timestamp, m.model,
@@ -152,6 +167,7 @@ def query_search(q: str, limit: int = 20, type: str = None):
 
 def query_similar_error(error: str, limit: int = 5):
     """Find past errors and their solutions."""
+    error = _auto_phrase(error)
     conn = get_conn()
     error_matches = rows_to_dicts(conn.execute("""
         SELECT m.uuid, m.session_id, m.content, m.timestamp,
