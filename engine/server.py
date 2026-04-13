@@ -47,7 +47,7 @@ async def lifespan(app):
         yield
 
 
-app = FastAPI(title="bmfote Memory API", version="1.0.0", lifespan=lifespan)
+app = FastAPI(title="bmfote Memory API", version="1.0.0", lifespan=lifespan, redoc_url=None)
 
 # Mount MCP — its lifespan is managed by the parent app above
 app.mount("/mcp", mcp_app)
@@ -117,6 +117,19 @@ async def logging_middleware(request: Request, call_next):
         response.status_code,
     )
     return response
+
+
+@app.get("/")
+def root():
+    """Zero-effort discovery. Lists core endpoints so a fresh agent doesn't
+    have to curl /, /api, /search and parse OpenAPI before it can search."""
+    return {
+        "name": "bmfote memory API",
+        "search": "/api/search?q=QUERY",
+        "fetch": "/api/message/{uuid}?context=1",
+        "recent": "/api/recent?hours=24",
+        "spec": "/openapi.json",
+    }
 
 
 @app.get("/health")
