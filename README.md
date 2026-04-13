@@ -4,7 +4,7 @@
 
 <p align="center">
   <a href="LICENSE"><img src="https://img.shields.io/badge/License-AGPL%203.0-blue.svg" alt="License"></a>
-  <a href="package.json"><img src="https://img.shields.io/badge/version-0.11.3-green.svg" alt="Version"></a>
+  <a href="package.json"><img src="https://img.shields.io/badge/version-0.11.4-green.svg" alt="Version"></a>
   <img src="https://img.shields.io/badge/python-%E2%89%A53.12-brightgreen.svg" alt="Python">
   <img src="https://img.shields.io/badge/node-%E2%89%A518-brightgreen.svg" alt="Node">
   <img src="https://img.shields.io/badge/Powered%20by-Turso-4FF8D2.svg" alt="Powered by Turso">
