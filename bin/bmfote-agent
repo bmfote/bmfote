@@ -1,0 +1,9 @@
+#!/usr/bin/env python3
+"""Thin shim — defers to engine.managed_agents."""
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+from engine.managed_agents import _cli
+
+sys.exit(_cli(sys.argv[1:]))
