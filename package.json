@@ -1,15 +1,22 @@
 {
   "name": "bmfote",
-  "version": "0.11.4",
-  "description": "Cloud context for AI agents — drop-in experiential memory accessible across any agent or device",
+  "version": "0.11.5",
+  "description": "One memory across Claude Code, Cursor, Messages API, and Managed Agents — the context layer your AI tools share.",
   "bin": {
     "bmfote": "./bin/cli.js",
     "bmfote-agent": "./bin/bmfote-agent"
   },
   "files": [
-    "bin/",
-    "hooks/",
-    "installer/"
+    "bin/cli.js",
+    "bin/bmfote-agent",
+    "hooks/post-compaction-context.sh",
+    "hooks/pre-compaction-context.sh",
+    "hooks/stop.sh",
+    "hooks/sync-transcript.sh",
+    "installer/managed_agents.py",
+    "installer/setup.sh",
+    "LICENSE",
+    "README.md"
   ],
   "keywords": [
     "ai",
