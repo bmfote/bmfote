@@ -155,6 +155,33 @@ hooks = settings.setdefault("hooks", {})
 hooks_dir = os.path.expanduser("~/.claude/hooks")
 changed = False
 
+# Strip legacy non-prefixed entries left over from pre-0.5 installs.
+# Older versions wrote these script names without the "bmfote-" prefix,
+# so an upgrade would double-register the hook and fire it twice per turn.
+LEGACY_SCRIPTS = ("post-compaction-context.sh", "pre-compaction-context.sh", "stop.sh")
+
+def _is_legacy(cmd):
+    if not cmd or "bmfote-" in cmd:
+        return False
+    return any(cmd.endswith("/" + s) or cmd == s for s in LEGACY_SCRIPTS)
+
+for event in ("UserPromptSubmit", "PreCompact", "Stop"):
+    entries = hooks.get(event, [])
+    cleaned = []
+    for entry in entries:
+        sub = entry.get("hooks", [])
+        kept = [h for h in sub if not _is_legacy(h.get("command", ""))]
+        if len(kept) != len(sub):
+            changed = True
+            print(f"  Removed {len(sub) - len(kept)} legacy {event} hook(s)")
+        if kept or not sub:
+            new_entry = dict(entry)
+            if sub:
+                new_entry["hooks"] = kept
+            cleaned.append(new_entry)
+    if entries:
+        hooks[event] = cleaned
+
 # Define the bmfote hooks
 bmfote_hooks = {
     "UserPromptSubmit": f"{hooks_dir}/bmfote-post-compaction-context.sh",
