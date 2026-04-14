@@ -1,6 +1,6 @@
 {
   "name": "bmfote",
-  "version": "0.11.5",
+  "version": "0.11.6",
   "description": "One memory across Claude Code, Cursor, Messages API, and Managed Agents — the context layer your AI tools share.",
   "bin": {
     "bmfote": "./bin/cli.js",
