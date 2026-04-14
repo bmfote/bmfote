@@ -75,7 +75,7 @@ Anthropic shipped built-in memory stores for Managed Agents in April 2026. They'
 ## Key Features
 
 - 🌉 **One memory, four surfaces** — Claude Code, Cursor (via MCP), the Messages API, the Claude Agent SDK, and Anthropic Managed Agents all read from and write to the same searchable pool. The only memory layer that isn't captive to `/v1/sessions`.
-- 🪝 **Zero-glue for Claude Code** — hooks auto-record every session; MCP tools auto-recall on `SessionStart`.
+- 🪝 **Zero-glue for Claude Code** — a `UserPromptSubmit` hook auto-records every turn and a `Stop` hook finalizes each session; MCP recall tools are registered automatically so the agent can pull memory on any turn without ceremony.
 - 🐍 **Any Python agent, same surface** — `pip install bmfote-client` gives Messages API and Agent SDK agents the same recall + write loop Claude Code gets for free.
 - 🧠 **Agent-initiated writes** — agents call `remember()` to persist what matters, not just passively recall.
 - 🔒 **Your Turso, your token, your data** — self-hosted, bring-your-own-bearer. AGPL server (no closed-SaaS re-hosts) + MIT client (drop into any agent codebase, proprietary or not).
@@ -86,7 +86,7 @@ Five MCP tools ship out of the box: `search_memory`, `find_error`, `get_context`
 
 ## How It Works
 
-1. **Write** — every Claude Code turn is captured by a `PostToolUse` hook and streamed to a Turso database. Non-Claude-Code agents do the same via `bmfote-client`, or by calling `remember()` mid-turn as an MCP tool.
+1. **Write** — every Claude Code turn is captured by a `UserPromptSubmit` hook (with a `Stop` hook finalizing the last turn on session end) and streamed to a Turso database. Non-Claude-Code agents do the same via `bmfote-client`, or by calling `remember()` mid-turn as an MCP tool.
 2. **Search** — a FastAPI server exposes BM25 full-text search over every message, session, and tool call you've ever had with any agent.
 3. **Recall** — five MCP tools are auto-registered in Claude Code and reachable over HTTP by any MCP-speaking agent (Cursor, Managed Agents, custom Agent SDK apps).
 4. **Bridge** — because recall is HTTP + MCP and writes are SDK-based, the same memory is reachable from every surface an agent can run on. No surface owns it.
