@@ -28,6 +28,7 @@ CREATE TABLE IF NOT EXISTS messages (
   input_tokens INTEGER,
   output_tokens INTEGER,
   timestamp TIMESTAMP,
+  workspace_id TEXT NOT NULL DEFAULT 'bmfote-default',
   FOREIGN KEY (session_id) REFERENCES sessions(session_id)
 );
 
@@ -39,6 +40,7 @@ CREATE TABLE IF NOT EXISTS messages (
 CREATE INDEX IF NOT EXISTS idx_messages_session ON messages(session_id);
 CREATE INDEX IF NOT EXISTS idx_messages_timestamp ON messages(timestamp);
 CREATE INDEX IF NOT EXISTS idx_messages_type ON messages(type);
+CREATE INDEX IF NOT EXISTS idx_messages_workspace ON messages(workspace_id);
 
 -- =============================================================
 -- FTS5 virtual tables (standard SQLite FTS5 — works on Turso Cloud)

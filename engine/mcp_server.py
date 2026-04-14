@@ -38,19 +38,26 @@ def _get_queries():
 
 
 @mcp.tool()
-def search_memory(query: str, limit: int = 20, type: Optional[str] = None) -> str:
-    """Full-text search over all conversation messages.
+def search_memory(
+    query: str,
+    limit: int = 20,
+    type: Optional[str] = None,
+    workspace: Optional[str] = None,
+) -> str:
+    """Full-text search over conversation messages in a workspace.
 
     Args:
         query: FTS5 search query (supports AND, OR, NOT, "phrase", prefix*)
         limit: Max results (default 20, max 100)
         type: Filter by message type — 'user' or 'assistant'
+        workspace: Workspace scope (defaults to 'bmfote-default'). Memories in
+            different workspaces are fully isolated.
     """
     q_search, *_ = _get_queries()
     limit = min(limit, 100)
 
     try:
-        results = q_search(query, limit, type)
+        results = q_search(query, limit, type, workspace)
     except Exception:
         return f"Invalid search query: {query}"
 
@@ -68,18 +75,19 @@ def search_memory(query: str, limit: int = 20, type: Optional[str] = None) -> st
 
 
 @mcp.tool()
-def find_error(error_text: str, limit: int = 5) -> str:
+def find_error(error_text: str, limit: int = 5, workspace: Optional[str] = None) -> str:
     """Find past errors and the solutions that followed them.
 
     Args:
         error_text: Error message or keywords to search for
         limit: Max results (default 5, max 20)
+        workspace: Workspace scope (defaults to 'bmfote-default').
     """
     _, q_error, *_ = _get_queries()
     limit = min(limit, 20)
 
     try:
-        results = q_error(error_text, limit)
+        results = q_error(error_text, limit, workspace)
     except Exception:
         return f"Invalid search query: {error_text}"
 
@@ -104,17 +112,19 @@ def find_error(error_text: str, limit: int = 5) -> str:
 
 
 @mcp.tool()
-def get_context(uuid: str, context: int = 1) -> str:
+def get_context(uuid: str, context: int = 1, workspace: Optional[str] = None) -> str:
     """Get a full message by UUID with surrounding conversation context.
 
     Args:
         uuid: Message UUID (from search results)
         context: Number of messages before/after to include (0-10, default 1)
+        workspace: Workspace scope (defaults to 'bmfote-default'). A UUID in
+            another workspace returns 'not found' even if guessed correctly.
     """
     _, _, q_message, *_ = _get_queries()
     context = max(0, min(context, 10))
 
-    result = q_message(uuid, context)
+    result = q_message(uuid, context, workspace)
     if not result:
         return f"Message not found: {uuid}"
 
@@ -137,18 +147,19 @@ def get_context(uuid: str, context: int = 1) -> str:
 
 
 @mcp.tool()
-def get_recent(hours: int = 24, limit: int = 50) -> str:
+def get_recent(hours: int = 24, limit: int = 50, workspace: Optional[str] = None) -> str:
     """Get recent conversation messages — what was I working on?
 
     Args:
         hours: How far back to look (default 24, max 168)
         limit: Max results (default 50, max 200)
+        workspace: Workspace scope (defaults to 'bmfote-default').
     """
     *_, q_recent = _get_queries()
     hours = min(hours, 168)
     limit = min(limit, 200)
 
-    results = q_recent(hours, limit)
+    results = q_recent(hours, limit, None, workspace)
 
     if not results:
         return f"No messages in the last {hours} hours."
@@ -163,12 +174,17 @@ def get_recent(hours: int = 24, limit: int = 50) -> str:
 
 
 @mcp.tool()
-def remember(content: str, topic: str = "", project: str = "managed-agent") -> str:
+def remember(
+    content: str,
+    topic: str = "",
+    project: str = "managed-agent",
+    workspace: Optional[str] = None,
+) -> str:
     """Save something to long-term memory for future agent sessions to recall.
 
     Writes into the same conversation store `search_memory` reads from, so a
     later agent run — your next session, or a different agent scoped to the
-    same project — will surface this via a normal recall query.
+    same workspace — will surface this via a normal recall query.
 
     Use this when you want future runs to build on what you just learned.
     Good for: research findings, decisions made, facts discovered, contacts
@@ -180,13 +196,17 @@ def remember(content: str, topic: str = "", project: str = "managed-agent") -> s
             future reader must understand it without seeing this conversation.
         topic: Short title (under 80 chars), prefixed to content for
             searchability. Optional.
-        project: Project scope. Memories in different projects don't cross
-            over in recall. Defaults to "managed-agent".
+        project: Project scope — a human-readable label on the session row.
+            Defaults to "managed-agent".
+        workspace: Workspace scope — the hard isolation boundary. Memories in
+            different workspaces never cross over in recall. Defaults to
+            'bmfote-default'.
     """
     if not content or not content.strip():
         return "Nothing to remember — content was empty."
 
     conn = get_conn()
+    ws = workspace or "bmfote-default"
     session_id = f"agent-memory-{project}"
     now = datetime.now(timezone.utc).isoformat()
 
@@ -211,10 +231,10 @@ def remember(content: str, topic: str = "", project: str = "managed-agent") -> s
 
     conn.execute(
         """
-        INSERT INTO messages (uuid, session_id, type, role, content, timestamp)
-        VALUES (?, ?, 'assistant', 'assistant', ?, ?)
+        INSERT INTO messages (uuid, session_id, type, role, content, timestamp, workspace_id)
+        VALUES (?, ?, 'assistant', 'assistant', ?, ?, ?)
         """,
-        (msg_uuid, session_id, body, now),
+        (msg_uuid, session_id, body, now, ws),
     )
 
     conn.commit()
@@ -222,6 +242,6 @@ def remember(content: str, topic: str = "", project: str = "managed-agent") -> s
         conn.sync()
 
     return (
-        f"Memory saved to project '{project}'. "
+        f"Memory saved to workspace '{ws}' (project='{project}'). "
         f"Searchable via search_memory. uuid={msg_uuid}"
     )

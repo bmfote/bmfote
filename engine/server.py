@@ -25,6 +25,7 @@ load_dotenv()
 
 API_TOKEN = os.getenv("API_TOKEN", "")
 PORT = int(os.getenv("PORT", "8026"))
+DEFAULT_WORKSPACE = "bmfote-default"
 
 # Fail closed: refuse to start without auth on cloud deploys
 if is_remote_db() and not API_TOKEN:
@@ -155,9 +156,10 @@ def _auto_phrase(q: str) -> str:
     return f'"{q}"'
 
 
-def query_search(q: str, limit: int = 20, type: str = None):
+def query_search(q: str, limit: int = 20, type: str = None, workspace_id: str = None):
     """Full-text search over conversation messages with BM25 ranking."""
     q = _auto_phrase(q)
+    workspace_id = workspace_id or DEFAULT_WORKSPACE
     conn = get_conn()
     sql = """
         SELECT m.uuid, m.session_id, m.type, m.role, m.timestamp, m.model,
@@ -167,9 +169,9 @@ def query_search(q: str, limit: int = 20, type: str = None):
         FROM messages_fts f
         JOIN messages m ON f.rowid = m.id
         LEFT JOIN sessions s ON m.session_id = s.session_id
-        WHERE messages_fts MATCH ?
+        WHERE messages_fts MATCH ? AND m.workspace_id = ?
     """
-    params: list = [q]
+    params: list = [q, workspace_id]
     if type:
         sql += " AND m.type = ?"
         params.append(type)
@@ -178,9 +180,10 @@ def query_search(q: str, limit: int = 20, type: str = None):
     return rows_to_dicts(conn.execute(sql, tuple(params)))
 
 
-def query_similar_error(error: str, limit: int = 5):
+def query_similar_error(error: str, limit: int = 5, workspace_id: str = None):
     """Find past errors and their solutions."""
     error = _auto_phrase(error)
+    workspace_id = workspace_id or DEFAULT_WORKSPACE
     conn = get_conn()
     error_matches = rows_to_dicts(conn.execute("""
         SELECT m.uuid, m.session_id, m.content, m.timestamp,
@@ -191,18 +194,19 @@ def query_similar_error(error: str, limit: int = 5):
         LEFT JOIN sessions s ON m.session_id = s.session_id
         WHERE messages_fts MATCH ?
           AND m.type = 'user'
+          AND m.workspace_id = ?
         ORDER BY rank
         LIMIT ?
-    """, (error, limit)))
+    """, (error, workspace_id, limit)))
 
     results = []
     for err in error_matches:
         solution = row_to_dict(conn.execute("""
             SELECT content, timestamp
             FROM messages
-            WHERE parent_uuid = ? AND type = 'assistant'
+            WHERE parent_uuid = ? AND type = 'assistant' AND workspace_id = ?
             LIMIT 1
-        """, (err["uuid"],)))
+        """, (err["uuid"], workspace_id)))
         results.append({
             "error_context": err["content"][:800],
             "project": err["project"],
@@ -214,16 +218,21 @@ def query_similar_error(error: str, limit: int = 5):
     return results
 
 
-def query_message(uuid: str, context: int = 1):
-    """Get full message content by UUID, with optional surrounding context."""
+def query_message(uuid: str, context: int = 1, workspace_id: str = None):
+    """Get full message content by UUID, with optional surrounding context.
+
+    Workspace isolation is enforced: a UUID in workspace A is not visible to
+    callers scoped to workspace B, even if they guess the UUID correctly.
+    """
+    workspace_id = workspace_id or DEFAULT_WORKSPACE
     conn = get_conn()
     target = row_to_dict(conn.execute("""
         SELECT m.uuid, m.session_id, m.type, m.role, m.content,
                m.timestamp, m.model, s.project
         FROM messages m
         LEFT JOIN sessions s ON m.session_id = s.session_id
-        WHERE m.uuid = ?
-    """, (uuid,)))
+        WHERE m.uuid = ? AND m.workspace_id = ?
+    """, (uuid, workspace_id)))
 
     if not target:
         return None
@@ -234,9 +243,9 @@ def query_message(uuid: str, context: int = 1):
     context_rows = rows_to_dicts(conn.execute("""
         SELECT uuid, type, role, content, timestamp, model
         FROM messages
-        WHERE session_id = ? AND uuid != ?
+        WHERE session_id = ? AND uuid != ? AND workspace_id = ?
         ORDER BY timestamp
-    """, (target["session_id"], uuid)))
+    """, (target["session_id"], uuid, workspace_id)))
 
     before = [m for m in context_rows if m["timestamp"] <= target["timestamp"]]
     after = [m for m in context_rows if m["timestamp"] > target["timestamp"]]
@@ -244,8 +253,9 @@ def query_message(uuid: str, context: int = 1):
     return {**target, "before": before[-context:], "after": after[:context]}
 
 
-def query_recent(hours: int = 24, limit: int = 50, session_id: str = None):
+def query_recent(hours: int = 24, limit: int = 50, session_id: str = None, workspace_id: str = None):
     """Get recent messages, optionally filtered by session."""
+    workspace_id = workspace_id or DEFAULT_WORKSPACE
     conn = get_conn()
     if session_id:
         sql = """
@@ -253,10 +263,10 @@ def query_recent(hours: int = 24, limit: int = 50, session_id: str = None):
                    s.project
             FROM messages m
             LEFT JOIN sessions s ON m.session_id = s.session_id
-            WHERE m.session_id = ?
+            WHERE m.session_id = ? AND m.workspace_id = ?
             ORDER BY m.timestamp DESC LIMIT ?
         """
-        params: list = [session_id, limit]
+        params: list = [session_id, workspace_id, limit]
     else:
         cutoff = (datetime.now(timezone.utc) - timedelta(hours=hours)).isoformat()
         sql = """
@@ -264,10 +274,10 @@ def query_recent(hours: int = 24, limit: int = 50, session_id: str = None):
                    s.project
             FROM messages m
             LEFT JOIN sessions s ON m.session_id = s.session_id
-            WHERE m.timestamp > ?
+            WHERE m.timestamp > ? AND m.workspace_id = ?
             ORDER BY m.timestamp DESC LIMIT ?
         """
-        params = [cutoff, limit]
+        params = [cutoff, workspace_id, limit]
     return rows_to_dicts(conn.execute(sql, tuple(params)))
 
 
@@ -282,9 +292,10 @@ def search_messages(
     q: str,
     limit: int = Query(default=20, le=100),
     type: str = Query(default=None, description="Filter by 'user' or 'assistant'"),
+    workspace_id: str = Query(default=None, description="Workspace scope (defaults to 'bmfote-default')"),
 ):
     try:
-        return query_search(q, limit, type)
+        return query_search(q, limit, type, workspace_id)
     except Exception as e:
         return JSONResponse(status_code=400, content={"error": f"invalid search query: {e}"})
 
@@ -295,9 +306,10 @@ def similar_error(
     request: Request,
     error: str,
     limit: int = Query(default=5, le=20),
+    workspace_id: str = Query(default=None),
 ):
     try:
-        return query_similar_error(error, limit)
+        return query_similar_error(error, limit, workspace_id)
     except Exception as e:
         return JSONResponse(status_code=400, content={"error": f"invalid search query: {e}"})
 
@@ -308,8 +320,9 @@ def get_message(
     request: Request,
     uuid: str,
     context: int = Query(default=1, ge=0, le=10),
+    workspace_id: str = Query(default=None),
 ):
-    result = query_message(uuid, context)
+    result = query_message(uuid, context, workspace_id)
     if result is None:
         return JSONResponse(status_code=404, content={"error": "message not found"})
     return result
@@ -322,8 +335,9 @@ def recent_messages(
     hours: int = Query(default=24, le=168),
     limit: int = Query(default=50, le=200),
     session_id: str = Query(default=None),
+    workspace_id: str = Query(default=None),
 ):
-    return query_recent(hours, limit, session_id)
+    return query_recent(hours, limit, session_id, workspace_id)
 
 
 @app.get("/api/project/{project_name}")
@@ -332,27 +346,47 @@ def project_messages(
     request: Request,
     project_name: str,
     limit: int = Query(default=20, le=100),
+    workspace_id: str = Query(default=None),
 ):
     """Get recent messages from a specific project."""
+    workspace_id = workspace_id or DEFAULT_WORKSPACE
     conn = get_conn()
     return rows_to_dicts(conn.execute("""
         SELECT m.uuid, m.session_id, m.type, m.content, m.timestamp
         FROM messages m
         JOIN sessions s ON m.session_id = s.session_id
-        WHERE s.project = ?
+        WHERE s.project = ? AND m.workspace_id = ?
         ORDER BY m.timestamp DESC
         LIMIT ?
-    """, (project_name, limit)))
+    """, (project_name, workspace_id, limit)))
 
 
 @app.get("/api/stats")
 @limiter.limit("60/minute")
-def stats(request: Request):
-    """Database statistics."""
+def stats(
+    request: Request,
+    workspace_id: str = Query(default=None, description="Scope stats to a workspace (omit for global)"),
+):
+    """Database statistics. Omit workspace_id for global counts, provide it for per-workspace."""
     conn = get_conn()
+    if workspace_id:
+        msg_count = conn.execute(
+            "SELECT COUNT(*) FROM messages WHERE workspace_id = ?",
+            (workspace_id,),
+        ).fetchone()[0]
+        date_range = conn.execute(
+            "SELECT MIN(timestamp), MAX(timestamp) FROM messages WHERE workspace_id = ?",
+            (workspace_id,),
+        ).fetchone()
+        return {
+            "workspace_id": workspace_id,
+            "messages": msg_count,
+            "first_message": date_range[0],
+            "last_message": date_range[1],
+        }
+
     msg_count = conn.execute("SELECT COUNT(*) FROM messages").fetchone()[0]
     session_count = conn.execute("SELECT COUNT(*) FROM sessions").fetchone()[0]
-
     date_range = conn.execute(
         "SELECT MIN(timestamp), MAX(timestamp) FROM messages"
     ).fetchone()
@@ -380,31 +414,38 @@ class MessageCreate(BaseModel):
     input_tokens: Optional[int] = None
     output_tokens: Optional[int] = None
     timestamp: Optional[str] = None
+    workspace_id: Optional[str] = None
 
 
 @app.post("/api/messages")
 @limiter.limit("200/minute")
 def create_message(request: Request, msg: MessageCreate):
-    """Write a message to the shared memory. Returns the UUID."""
+    """Write a message to the shared memory. Returns the UUID.
+
+    Note: ON CONFLICT does NOT overwrite workspace_id — a message's workspace
+    is fixed at insert time so a caller can't re-post a UUID to move it.
+    """
     conn = get_conn()
     ts = msg.timestamp or datetime.now(timezone.utc).isoformat()
+    ws = msg.workspace_id or DEFAULT_WORKSPACE
 
     conn.execute("""
         INSERT INTO messages (uuid, session_id, parent_uuid, type, role,
-                              content, model, input_tokens, output_tokens, timestamp)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                              content, model, input_tokens, output_tokens, timestamp,
+                              workspace_id)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(uuid) DO UPDATE SET
             content=excluded.content, model=excluded.model,
             input_tokens=excluded.input_tokens, output_tokens=excluded.output_tokens
     """, (
         msg.uuid, msg.session_id, msg.parent_uuid, msg.type, msg.role,
-        msg.content, msg.model, msg.input_tokens, msg.output_tokens, ts,
+        msg.content, msg.model, msg.input_tokens, msg.output_tokens, ts, ws,
     ))
     conn.commit()
     if not is_remote_db():
         conn.sync()
 
-    return {"uuid": msg.uuid, "status": "ok"}
+    return {"uuid": msg.uuid, "status": "ok", "workspace_id": ws}
 
 
 class SessionCreate(BaseModel):
