@@ -18,6 +18,9 @@ from autoresearch.prepare import (
     CODE_DIR,
     CODE_GROUND_TRUTH,
     CODE_RUBRIC,
+    CONTEXT_ROT_DIR,
+    CONTEXT_ROT_GROUND_TRUTH,
+    CONTEXT_ROT_RUBRIC,
     MOAT_DIR,
     MOAT_GROUND_TRUTH,
     MOAT_RUBRIC,
@@ -507,3 +510,149 @@ def propose_recall_change(
         raise AgentError(str(e)) from e
 
     return proposal
+
+
+# ---------------------------------------------------------------------------
+# Context-rot track
+# ---------------------------------------------------------------------------
+
+CONTEXT_ROT_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "required": [
+        "mode",
+        "definition",
+        "manifestation",
+        "cost_model",
+        "inevitability",
+        "counter_narrative",
+        "evidence_anchor",
+    ],
+    "properties": {
+        "mode": {
+            "type": "string",
+            "enum": ["define", "quantify", "narrate", "counter"],
+            "description": "Must match the mode from the user prompt.",
+        },
+        "definition": {
+            "type": "string",
+            "description": "One-sentence definition of context rot. Crisp, non-technical.",
+        },
+        "manifestation": {
+            "type": "string",
+            "description": "How context rot shows up: specific scenario a buyer would recognize.",
+        },
+        "cost_model": {
+            "type": "string",
+            "description": "Economic impact quantified: time/money/accuracy loss with numbers.",
+        },
+        "inevitability": {
+            "type": "string",
+            "description": "Why this gets worse as AI adoption grows. Structural, not fixable.",
+        },
+        "counter_narrative": {
+            "type": "string",
+            "description": "Name an 'obvious fix' and why it fails. Must cite evidence.",
+        },
+        "evidence_anchor": {
+            "type": "string",
+            "description": "Which practitioner quote or paper supports this framing (by name).",
+        },
+    },
+}
+
+_CONTEXT_ROT_AGENT_SYSTEM_CACHE: str | None = None
+
+
+def build_context_rot_agent_system_prompt() -> str:
+    """Cached system prompt for the context-rot track agent."""
+    global _CONTEXT_ROT_AGENT_SYSTEM_CACHE
+    if _CONTEXT_ROT_AGENT_SYSTEM_CACHE is not None:
+        return _CONTEXT_ROT_AGENT_SYSTEM_CACHE
+
+    program_md = (CONTEXT_ROT_DIR / "program.md").read_text()
+
+    posts = [
+        ("Post 1 — minimalism philosophy", CONTEXT_ROT_GROUND_TRUTH / "post_1_minimalism.md"),
+        ("Post 2 — cloud context category", CONTEXT_ROT_GROUND_TRUTH / "post_2_cloud_context.md"),
+        ("Post 3 — shared brain for teams", CONTEXT_ROT_GROUND_TRUTH / "post_3_shared_brain.md"),
+    ]
+
+    evidence_text = (CONTEXT_ROT_GROUND_TRUTH / "evidence.md").read_text()
+    problem_text = (CONTEXT_ROT_GROUND_TRUTH / "problem_definition.md").read_text()
+    rubric_text = CONTEXT_ROT_RUBRIC.read_text()
+
+    parts: list[str] = [program_md, "\n\n---\n\n## GROUND TRUTH POSTS\n"]
+    for label, path in posts:
+        parts.append(f"\n### {label}\n\n{path.read_text()}\n")
+
+    parts.append(f"\n\n---\n\n<evidence>{evidence_text}</evidence>\n\n")
+    parts.append(f"<problem-definition>{problem_text}</problem-definition>\n\n")
+    parts.append(
+        "\n\n---\n\n## RUBRIC (the fitness function — the judge will use this)\n\n"
+    )
+    parts.append(rubric_text)
+    parts.append(
+        "\n\n---\n\n## OUTPUT RULES (CRITICAL FOR LATENCY)\n\n"
+        "Do not write any reasoning, preamble, explanation, or summary before "
+        "or after the structured output. Do not write a markdown header. Do not "
+        "restate your thinking. Each text field must be 1–3 sentences max. "
+        "Your entire output is the structured object, nothing else."
+    )
+
+    _CONTEXT_ROT_AGENT_SYSTEM_CACHE = "".join(parts)
+    return _CONTEXT_ROT_AGENT_SYSTEM_CACHE
+
+
+def _format_context_rot_survivors(survivors: list[dict[str, Any]]) -> str:
+    if not survivors:
+        return "(No recent survivors yet — this is an early experiment. Propose whatever scores highest.)"
+    lines = []
+    for i, s in enumerate(survivors[-5:], 1):
+        lines.append(f"Survivor {i}: [{s.get('mode', '?')}]")
+        lines.append(f"  definition: {s.get('definition', '')[:180]}")
+        lines.append(f"  manifestation: {s.get('manifestation', '')[:180]}")
+        lines.append(f"  cost_model: {s.get('cost_model', '')[:180]}")
+        lines.append(f"  counter_narrative: {s.get('counter_narrative', '')[:180]}")
+        scores = s.get("scores", {})
+        lines.append(
+            f"  scored: leg={scores.get('legibility', '?')} "
+            f"eco={scores.get('economic', '?')} inv={scores.get('inevitability', '?')} "
+            f"composite={scores.get('composite', '?')}"
+        )
+        lines.append("")
+    return "\n".join(lines)
+
+
+def propose_context_rot(
+    mode: str,
+    recent_survivors: list[dict[str, Any]] | None = None,
+    model: str = DEFAULT_MODEL,
+    timeout_s: int = 180,
+) -> dict[str, Any]:
+    """Generate one context-rot problem definition."""
+    if mode not in ("define", "quantify", "narrate", "counter"):
+        raise ValueError(f"invalid mode: {mode}")
+
+    system_prompt = build_context_rot_agent_system_prompt()
+    survivors_text = _format_context_rot_survivors(recent_survivors or [])
+
+    user_prompt = (
+        f"Mode: **{mode}**\n\n"
+        "Recent survivors (do not repeat these — your proposal must be meaningfully different):\n"
+        f"{survivors_text}\n\n"
+        "Propose one context-rot problem definition. Return structured output matching "
+        "the schema. Each field 1–3 sentences max. Cite evidence."
+    )
+
+    try:
+        candidate = call_structured(
+            system_prompt=system_prompt,
+            user_prompt=user_prompt,
+            schema=CONTEXT_ROT_SCHEMA,
+            model=model,
+            timeout_s=timeout_s,
+        )
+    except CLIError as e:
+        raise AgentError(str(e)) from e
+
+    return candidate

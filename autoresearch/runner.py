@@ -57,6 +57,8 @@ from autoresearch.judge import (
     code_composite_score,
     code_min_axis,
     composite_score,
+    context_rot_composite_score,
+    context_rot_min_axis,
     min_axis,
     recall_composite_score,
     recall_min_axis,
@@ -65,6 +67,7 @@ from autoresearch.judge import (
 MOAT_TARGET_JSONL = prepare.MOAT_DIR / "target.jsonl"
 CODE_TARGET_JSONL = prepare.CODE_DIR / "target.jsonl"
 RECALL_TARGET_JSONL = prepare.RECALL_DIR / "target.jsonl"
+CONTEXT_ROT_TARGET_JSONL = prepare.CONTEXT_ROT_DIR / "target.jsonl"
 
 # Promotion gate — designed for a "ranked list of good pitches" artifact,
 # not strict monotonic improvement. Once the agent hits the top of the scale,
@@ -968,10 +971,239 @@ def run_recall_loop(max_experiments: int, max_wall_s: int | None) -> int:
     return executed
 
 
+# ---------------------------------------------------------------------------
+# Context-rot track
+# ---------------------------------------------------------------------------
+
+CONTEXT_ROT_PROMOTION_COMPOSITE_FLOOR = 8.0
+CONTEXT_ROT_PROMOTION_MIN_AXIS = 6
+
+_CONTEXT_ROT_MODE_SEQUENCE = [
+    "define", "quantify", "narrate", "counter",
+    "define", "narrate", "quantify", "counter",
+]
+
+
+def _rotate_context_rot_mode(i: int) -> str:
+    return _CONTEXT_ROT_MODE_SEQUENCE[i % len(_CONTEXT_ROT_MODE_SEQUENCE)]
+
+
+def _load_context_rot_survivors(n: int = 5) -> list[dict[str, Any]]:
+    if not CONTEXT_ROT_TARGET_JSONL.exists():
+        return []
+    lines = CONTEXT_ROT_TARGET_JSONL.read_text().splitlines()
+    survivors: list[dict[str, Any]] = []
+    for line in lines[-n * 2:]:
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            survivors.append(json.loads(line))
+        except json.JSONDecodeError:
+            continue
+    return survivors[-n:]
+
+
+def _context_rot_gate_check(verdict: dict[str, Any]) -> tuple[bool, str]:
+    composite = context_rot_composite_score(verdict)
+    min_ax = context_rot_min_axis(verdict)
+
+    if not verdict.get("counter_narrative_valid", False):
+        return (False, "counter_narrative_valid is false")
+
+    if min_ax < CONTEXT_ROT_PROMOTION_MIN_AXIS:
+        return (False, f"min_axis {min_ax} < {CONTEXT_ROT_PROMOTION_MIN_AXIS}")
+
+    if composite < CONTEXT_ROT_PROMOTION_COMPOSITE_FLOOR:
+        return (False, f"composite {composite:.2f} < floor {CONTEXT_ROT_PROMOTION_COMPOSITE_FLOOR}")
+
+    return (True, f"composite {composite:.2f} clears floor {CONTEXT_ROT_PROMOTION_COMPOSITE_FLOOR}")
+
+
+def _context_rot_promote(
+    candidate: dict[str, Any],
+    verdict: dict[str, Any],
+    experiment_i: int,
+) -> dict[str, Any]:
+    composite = context_rot_composite_score(verdict)
+    survivor = {
+        "experiment": experiment_i,
+        "ts": now(),
+        "mode": candidate["mode"],
+        "definition": candidate["definition"],
+        "manifestation": candidate["manifestation"],
+        "cost_model": candidate["cost_model"],
+        "inevitability": candidate["inevitability"],
+        "counter_narrative": candidate["counter_narrative"],
+        "evidence_anchor": candidate["evidence_anchor"],
+        "scores": {
+            "legibility": verdict["legibility"],
+            "economic": verdict["economic"],
+            "inevitability": verdict["inevitability"],
+            "composite": round(composite, 3),
+        },
+        "score_reasons": {
+            "legibility": verdict.get("legibility_reason", ""),
+            "economic": verdict.get("economic_reason", ""),
+            "inevitability": verdict.get("inevitability_reason", ""),
+        },
+        "counter_narrative_valid": verdict.get("counter_narrative_valid", False),
+        "counter_narrative_reason": verdict.get("counter_narrative_reason", ""),
+        "anti_pattern_words": verdict.get("anti_pattern_words", []),
+    }
+    append_jsonl(CONTEXT_ROT_TARGET_JSONL, survivor)
+    prior = load_best("context-rot")
+    if composite > prior.get("composite", 0.0):
+        save_best(
+            "context-rot",
+            {
+                "composite": round(composite, 3),
+                "experiment": experiment_i,
+                "ts": survivor["ts"],
+                "candidate": _strip_meta(candidate),
+                "verdict": _strip_meta(verdict),
+            },
+        )
+    return survivor
+
+
+def _context_rot_drift_check(experiment_i: int) -> dict[str, Any] | None:
+    best = load_best("context-rot")
+    if not best.get("candidate"):
+        return None
+    candidate = best["candidate"]
+    try:
+        verdict = judge.judge_context_rot(candidate)
+    except judge.JudgeError as e:
+        return {"drift_check_failed": str(e), "experiment": experiment_i}
+    new_composite = context_rot_composite_score(verdict)
+    old_composite = best.get("composite", 0.0)
+    delta = abs(new_composite - old_composite)
+    alarm = delta > DRIFT_HALT_THRESHOLD
+    info = {
+        "experiment": experiment_i,
+        "old_composite": round(old_composite, 3),
+        "new_composite": round(new_composite, 3),
+        "delta": round(delta, 3),
+        "alarm": alarm,
+    }
+    append_jsonl(prepare.STATE_DIR / "drift.jsonl", info)
+    return info
+
+
+def run_context_rot_loop(max_experiments: int, max_wall_s: int | None) -> int:
+    """Run the context-rot problem-definition loop."""
+    print(f"[runner] context-rot track — max {max_experiments} experiments", flush=True)
+    start_ts = time.time()
+    executed = 0
+    promoted = 0
+    failures = 0
+
+    for i in range(max_experiments):
+        if _SHUTDOWN_REQUESTED:
+            print("[runner] shutdown requested — stopping loop", flush=True)
+            break
+        if max_wall_s is not None and (time.time() - start_ts) > max_wall_s:
+            print(f"[runner] wall-clock budget {max_wall_s}s exceeded — stopping", flush=True)
+            break
+
+        executed += 1
+        mode = _rotate_context_rot_mode(i)
+        survivors = _load_context_rot_survivors(5)
+        current_best = load_best("context-rot")
+        current_best_composite = current_best.get("composite", 0.0)
+
+        exp = Experiment(
+            ts=now(),
+            track="context-rot",
+            experiment=i,
+            mode=mode,
+        )
+
+        exp_started = time.time()
+        candidate = None
+        verdict = None
+        try:
+            print(
+                f"[runner] exp {i:03d} mode={mode:10s} best={current_best_composite:.2f}",
+                flush=True,
+            )
+            candidate = agent.propose_context_rot(
+                mode=mode,
+                recent_survivors=survivors,
+            )
+            verdict = judge.judge_context_rot(_strip_meta(candidate))
+            ok, reason = _context_rot_gate_check(verdict)
+
+            exp.candidate = _strip_meta(candidate)
+            exp.score = round(context_rot_composite_score(verdict), 3)
+            exp.best_before = round(current_best_composite, 3)
+            exp.promoted = ok
+            exp.gate_reason = reason
+            exp.eval_breakdown = {
+                "legibility": verdict["legibility"],
+                "economic": verdict["economic"],
+                "inevitability": verdict["inevitability"],
+                "counter_narrative_valid": verdict.get("counter_narrative_valid", False),
+                "anti_pattern_words": verdict.get("anti_pattern_words", []),
+                "reasons": {
+                    "legibility": verdict.get("legibility_reason", ""),
+                    "economic": verdict.get("economic_reason", ""),
+                    "inevitability": verdict.get("inevitability_reason", ""),
+                },
+                "agent_usage": candidate.get("_usage", {}),
+                "judge_usage": verdict.get("_usage", {}),
+            }
+            exp.agent_exit = 0
+
+            if ok:
+                _context_rot_promote(candidate, verdict, i)
+                promoted += 1
+
+            elapsed = time.time() - exp_started
+            tag = "[PROMOTED]" if ok else "  (discard)"
+            print(
+                f"[runner]   {tag} score={exp.score:.2f} "
+                f"({verdict['legibility']}/{verdict['economic']}/{verdict['inevitability']}) "
+                f"counter={'OK' if verdict.get('counter_narrative_valid') else 'FAIL'} "
+                f"t={elapsed:.1f}s — {reason}",
+                flush=True,
+            )
+
+        except Exception as e:
+            failures += 1
+            exp.error = f"{type(e).__name__}: {e}"
+            exp.agent_exit = 1
+            print(f"[runner]   ERROR: {exp.error}", flush=True)
+        finally:
+            log_experiment(exp)
+
+        if (i + 1) % DRIFT_CHECK_EVERY == 0:
+            info = _context_rot_drift_check(i)
+            if info and info.get("alarm"):
+                print(
+                    f"[runner] DRIFT ALARM — current best re-scored from "
+                    f"{info['old_composite']} to {info['new_composite']} "
+                    f"(delta {info['delta']}). Halting.",
+                    flush=True,
+                )
+                break
+            elif info and "drift_check_failed" in info:
+                print(f"[runner] drift check failed: {info['drift_check_failed']}", flush=True)
+
+    total_elapsed = time.time() - start_ts
+    print(
+        f"\n[runner] done. {executed} experiments, {promoted} promoted, "
+        f"{failures} failures, {total_elapsed:.0f}s total",
+        flush=True,
+    )
+    return executed
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(prog="autoresearch.runner")
-    ap.add_argument("--track", choices=["moat", "code", "recall"], default="moat",
-                    help="Which track to run (moat=positioning, code=engine improvements, recall=search quality).")
+    ap.add_argument("--track", choices=["moat", "code", "recall", "context-rot"], default="moat",
+                    help="Which track to run (moat=positioning, code=engine improvements, recall=search quality, context-rot=problem naming).")
     ap.add_argument("--max-experiments", type=int, default=80,
                     help="Max experiments before stopping. Default 80.")
     ap.add_argument("--max-wall-s", type=int, default=None,
@@ -1017,6 +1249,8 @@ def main() -> int:
             run_code_loop(args.max_experiments, args.max_wall_s)
         elif args.track == "recall":
             run_recall_loop(args.max_experiments, args.max_wall_s)
+        elif args.track == "context-rot":
+            run_context_rot_loop(args.max_experiments, args.max_wall_s)
     finally:
         prepare.release_lock()
 

@@ -21,6 +21,8 @@ from autoresearch.cli_client import CLIError, call_structured
 from autoresearch.prepare import (
     CODE_GROUND_TRUTH,
     CODE_RUBRIC,
+    CONTEXT_ROT_GROUND_TRUTH,
+    CONTEXT_ROT_RUBRIC,
     MOAT_GROUND_TRUTH,
     MOAT_RUBRIC,
     RECALL_GROUND_TRUTH,
@@ -481,3 +483,147 @@ def recall_composite_score(verdict: dict[str, Any]) -> float:
 
 def recall_min_axis(verdict: dict[str, Any]) -> int:
     return min(verdict["retrieval"], verdict["minimalism"], verdict["reliability"], verdict["taste"])
+
+
+# ---------------------------------------------------------------------------
+# Context-rot track
+# ---------------------------------------------------------------------------
+
+CONTEXT_ROT_JUDGE_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "required": [
+        "legibility",
+        "legibility_reason",
+        "economic",
+        "economic_reason",
+        "inevitability",
+        "inevitability_reason",
+        "counter_narrative_valid",
+        "counter_narrative_reason",
+        "anti_pattern_words",
+    ],
+    "properties": {
+        "legibility": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 10,
+            "description": "Axis 1: can a non-technical buyer understand it? Integer 1-10.",
+        },
+        "legibility_reason": {"type": "string"},
+        "economic": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 10,
+            "description": "Axis 2: does it quantify the cost with real numbers? Integer 1-10.",
+        },
+        "economic_reason": {"type": "string"},
+        "inevitability": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 10,
+            "description": "Axis 3: does it feel structural and worsening? Integer 1-10.",
+        },
+        "inevitability_reason": {"type": "string"},
+        "counter_narrative_valid": {
+            "type": "boolean",
+            "description": "True iff counter-narrative names a specific fix, cites evidence, and is defensible.",
+        },
+        "counter_narrative_reason": {"type": "string"},
+        "anti_pattern_words": {
+            "type": "array",
+            "items": {"type": "string"},
+            "description": "Marketing words flagged. Empty if none.",
+        },
+    },
+}
+
+_CONTEXT_ROT_JUDGE_SYSTEM_CACHE: str | None = None
+
+
+def build_context_rot_judge_system_prompt() -> str:
+    """Cached system prompt for the context-rot judge."""
+    global _CONTEXT_ROT_JUDGE_SYSTEM_CACHE
+    if _CONTEXT_ROT_JUDGE_SYSTEM_CACHE is not None:
+        return _CONTEXT_ROT_JUDGE_SYSTEM_CACHE
+
+    posts = [
+        ("Post 1 — minimalism philosophy", CONTEXT_ROT_GROUND_TRUTH / "post_1_minimalism.md"),
+        ("Post 2 — cloud context category", CONTEXT_ROT_GROUND_TRUTH / "post_2_cloud_context.md"),
+        ("Post 3 — shared brain for teams", CONTEXT_ROT_GROUND_TRUTH / "post_3_shared_brain.md"),
+    ]
+
+    evidence_text = (CONTEXT_ROT_GROUND_TRUTH / "evidence.md").read_text()
+    problem_text = (CONTEXT_ROT_GROUND_TRUTH / "problem_definition.md").read_text()
+    rubric_text = CONTEXT_ROT_RUBRIC.read_text()
+
+    parts: list[str] = []
+    parts.append(
+        "You are the context-rot track judge. Your job is to score problem "
+        "definitions of 'context rot' against a three-axis rubric. Be strict, "
+        "conservative, and consistent — the same proposal must get the same "
+        "score every time. If unsure between two tiers, pick the lower one."
+    )
+    parts.append("\n\n## GROUND TRUTH POSTS (frozen, never edited)\n")
+    for label, path in posts:
+        parts.append(f"\n### {label}\n\n{path.read_text()}\n")
+    parts.append(f"\n\n<evidence>{evidence_text}</evidence>\n\n")
+    parts.append(f"<problem-definition>{problem_text}</problem-definition>\n\n")
+    parts.append("\n\n## RUBRIC (frozen, never edited)\n\n")
+    parts.append(rubric_text)
+    parts.append(
+        "\n\n## YOUR TASK\n\n"
+        "The user will send you a context-rot problem definition as a JSON "
+        "object with fields: mode, definition, manifestation, cost_model, "
+        "inevitability, counter_narrative, evidence_anchor.\n\n"
+        "Score it against the three axes defined in the rubric. Validate the "
+        "counter-narrative. Flag any anti-pattern words. Return structured "
+        "output matching the schema. Integer scores only — no floats, no "
+        "ranges, no null. Lower tier if unsure.\n\n"
+        "## OUTPUT RULES (CRITICAL FOR LATENCY)\n\n"
+        "Do not write any reasoning, preamble, explanation, or summary before "
+        "or after the structured output. Each *_reason field must be ONE "
+        "concise sentence (max 25 words). Your entire output is the structured "
+        "object, nothing else."
+    )
+    _CONTEXT_ROT_JUDGE_SYSTEM_CACHE = "".join(parts)
+    return _CONTEXT_ROT_JUDGE_SYSTEM_CACHE
+
+
+def judge_context_rot(
+    candidate: dict[str, Any],
+    model: str = DEFAULT_MODEL,
+    timeout_s: int = 180,
+) -> dict[str, Any]:
+    """Score one context-rot problem definition."""
+    system_prompt = build_context_rot_judge_system_prompt()
+    user_prompt = (
+        "Score this context-rot problem definition. Apply the rubric strictly. "
+        "Integer scores only, lower tier if unsure.\n\n"
+        f"CANDIDATE:\n{json.dumps(candidate, indent=2)}"
+    )
+
+    try:
+        verdict = call_structured(
+            system_prompt=system_prompt,
+            user_prompt=user_prompt,
+            schema=CONTEXT_ROT_JUDGE_SCHEMA,
+            model=model,
+            timeout_s=timeout_s,
+        )
+    except CLIError as e:
+        raise JudgeError(str(e)) from e
+
+    return verdict
+
+
+def context_rot_composite_score(verdict: dict[str, Any]) -> float:
+    """Weighted composite: 0.35*legibility + 0.35*economic + 0.30*inevitability."""
+    return (
+        0.35 * verdict["legibility"]
+        + 0.35 * verdict["economic"]
+        + 0.30 * verdict["inevitability"]
+    )
+
+
+def context_rot_min_axis(verdict: dict[str, Any]) -> int:
+    return min(verdict["legibility"], verdict["economic"], verdict["inevitability"])
