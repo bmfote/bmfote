@@ -53,7 +53,24 @@ Emit a structured JSON object with a complete unified diff (`git apply` format).
 - Use `--- a/path` and `+++ b/path` headers
 - Include `@@ -start,count +start,count @@` hunk headers
 - Have 3 lines of context before and after each change
-- Context lines must match the current source files exactly
+- Context lines must match the current source files EXACTLY (character-for-character)
+- Count lines carefully: `count` in `@@ -start,count +start,count @@` is the total lines in the hunk (context + removed for `-`, context + added for `+`)
+
+Example of a correct unified diff:
+```
+--- a/engine/server.py
++++ b/engine/server.py
+@@ -151,7 +151,9 @@ def _auto_phrase(q: str) -> str:
+     tokens = q.split()
+     if any(op in tokens for op in ("AND", "OR", "NOT", "NEAR")):
+         return q
+-    return f'"{q}"'
++    expanded = [f"{t}*" if len(t) >= 3 else t for t in tokens]
++    return " OR ".join(expanded)
++
+```
+
+Common mistakes to avoid: wrong line numbers in `@@` header, missing space prefix on context lines, tabs instead of spaces, extra/missing blank lines.
 
 Include a `change_id` (short kebab-case), `category` matching your mode, `description` (one sentence), `rationale` (1-3 sentences), and `expected_improvements` (which query categories should improve and why).
 

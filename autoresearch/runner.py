@@ -648,6 +648,11 @@ RECALL_PROMOTION_COMPOSITE_FLOOR = 7.5
 RECALL_PROMOTION_MIN_AXIS = 5
 RECALL_ALLOWED_PATHS = ["engine/"]
 
+# Recall track has objective eval metrics (MRR, precision, recall) so judge
+# score drift matters less than on moat/code tracks. Widen the threshold to
+# avoid halting runs over normal LLM scoring variance.
+RECALL_DRIFT_HALT_THRESHOLD = 2.0
+
 _RECALL_MODE_SEQUENCE = [
     "query_rewrite", "ranking", "query_rewrite", "tokenizer",
     "query_rewrite", "discover", "ranking", "query_rewrite",
@@ -764,7 +769,7 @@ def _recall_drift_check(experiment_i: int) -> dict[str, Any] | None:
     new_composite = recall_composite_score(verdict)
     old_composite = best.get("composite", 0.0)
     delta = abs(new_composite - old_composite)
-    alarm = delta > DRIFT_HALT_THRESHOLD
+    alarm = delta > RECALL_DRIFT_HALT_THRESHOLD
     info = {
         "experiment": experiment_i,
         "old_composite": round(old_composite, 3),
