@@ -1,4 +1,4 @@
-"""bmfote-client — write and read agent turns against a bmfote memory server."""
+"""cctx-client — write and read agent turns against a cctx memory server."""
 
 from .client import Client, Session
 from .anthropic_adapter import record_exchange

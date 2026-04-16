@@ -1,58 +1,58 @@
 #!/bin/bash
-# bmfote setup — configure any machine for cloud memory in one command.
+# cctx setup — configure any machine for cloud memory in one command.
 #
 # Usage:
-#   npx bmfote setup
+#   npx cctx setup
 #
 # Or curl one-liner:
-#   curl -fsSL https://raw.githubusercontent.com/bmfote/bmfote/main/installer/setup.sh | bash
+#   curl -fsSL https://raw.githubusercontent.com/cctx/cctx/main/installer/setup.sh | bash
 #
 # What it does:
 #   1. Verifies Claude Code is installed
-#   2. Tests connection to the bmfote API
+#   2. Tests connection to the cctx API
 #   3. Adds MCP server to Claude Code (user scope)
 #   4. Downloads/copies hook scripts to ~/.claude/hooks/
 #   5. Configures hooks in ~/.claude/settings.json
-#   6. Sets BMFOTE_URL and BMFOTE_TOKEN in shell profile
+#   6. Sets CCTX_URL and CCTX_TOKEN in shell profile
 #
 # Safe to re-run — skips steps that are already configured.
 
 set -euo pipefail
 
 # --- Parse arguments (--url and --token are required) ---
-BMFOTE_URL=""
-BMFOTE_TOKEN=""
+CCTX_URL=""
+CCTX_TOKEN=""
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
-    --url)  BMFOTE_URL="$2"; shift 2 ;;
-    --token) BMFOTE_TOKEN="$2"; shift 2 ;;
-    setup) shift ;;  # allow "bmfote setup" — just skip the word
+    --url)  CCTX_URL="$2"; shift 2 ;;
+    --token) CCTX_TOKEN="$2"; shift 2 ;;
+    setup) shift ;;  # allow "cctx setup" — just skip the word
     -h|--help)
-      echo "Usage: npx bmfote setup --url <API_URL> --token <API_TOKEN>"
+      echo "Usage: npx cctx setup --url <API_URL> --token <API_TOKEN>"
       echo ""
       echo "Options (both required):"
-      echo "  --url <url>      Your bmfote API URL (from 'npx bmfote deploy')"
-      echo "  --token <token>  Your API token (from 'npx bmfote deploy')"
+      echo "  --url <url>      Your cctx API URL (from 'npx cctx deploy')"
+      echo "  --token <token>  Your API token (from 'npx cctx deploy')"
       exit 0
       ;;
     *) echo "Unknown option: $1"; exit 1 ;;
   esac
 done
 
-if [ -z "$BMFOTE_URL" ] || [ -z "$BMFOTE_TOKEN" ]; then
+if [ -z "$CCTX_URL" ] || [ -z "$CCTX_TOKEN" ]; then
   echo "ERROR: --url and --token are required."
   echo ""
-  echo "Usage: npx bmfote setup --url <API_URL> --token <API_TOKEN>"
+  echo "Usage: npx cctx setup --url <API_URL> --token <API_TOKEN>"
   echo ""
   echo "See https://github.com/bmfote/bmfote#part-1-deploy-the-server to get your URL and token."
   exit 1
 fi
 
 # Strip trailing slash from URL
-BMFOTE_URL="${BMFOTE_URL%/}"
+CCTX_URL="${CCTX_URL%/}"
 
-echo "bmfote setup"
+echo "cctx setup"
 echo "============"
 echo ""
 
@@ -69,9 +69,9 @@ echo "  Found: claude $CLAUDE_VERSION"
 # --- Step 2: Test API connection ---
 echo "[2/6] Testing API connection..."
 STATS=$(curl -sf --connect-timeout 5 --max-time 10 \
-  -H "Authorization: Bearer $BMFOTE_TOKEN" \
-  "$BMFOTE_URL/api/stats" 2>/dev/null) || {
-  echo "  ERROR: Could not reach $BMFOTE_URL/api/stats"
+  -H "Authorization: Bearer $CCTX_TOKEN" \
+  "$CCTX_URL/api/stats" 2>/dev/null) || {
+  echo "  ERROR: Could not reach $CCTX_URL/api/stats"
   echo "  Check your --url and --token values."
   exit 1
 }
@@ -92,31 +92,31 @@ echo "  Connected: $MSG_COUNT messages in database"
 # --- Step 3: Add MCP server ---
 echo "[3/6] Configuring MCP server..."
 # Check if already configured
-EXISTING=$(claude mcp list 2>/dev/null | grep -c '^bmfote-memory:' || true)
+EXISTING=$(claude mcp list 2>/dev/null | grep -c '^cctx-memory:' || true)
 if [ "$EXISTING" -gt 0 ]; then
-  echo "  MCP server 'bmfote-memory' already configured — removing old entry"
-  claude mcp remove -s user bmfote-memory 2>/dev/null || true
+  echo "  MCP server 'cctx-memory' already configured — removing old entry"
+  claude mcp remove -s user cctx-memory 2>/dev/null || true
 fi
 
 claude mcp add -s user --transport http \
-  bmfote-memory "$BMFOTE_URL/mcp/" \
-  --header "Authorization: Bearer $BMFOTE_TOKEN"
+  cctx-memory "$CCTX_URL/mcp/" \
+  --header "Authorization: Bearer $CCTX_TOKEN"
 
-echo "  Added MCP server: bmfote-memory (user scope)"
+echo "  Added MCP server: cctx-memory (user scope)"
 
 # --- Step 4: Install hook scripts ---
 echo "[4/6] Installing hook scripts..."
 HOOKS_DIR="$HOME/.claude/hooks"
 mkdir -p "$HOOKS_DIR"
 
-GITHUB_RAW="https://raw.githubusercontent.com/bmfote/bmfote/main/hooks"
+GITHUB_RAW="https://raw.githubusercontent.com/cctx/cctx/main/hooks"
 
 # Try local repo first, fall back to GitHub download
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" 2>/dev/null && pwd 2>/dev/null || echo "")"
 HOOKS_SRC="${SCRIPT_DIR:+$SCRIPT_DIR/../hooks}"
 
 for hook in post-compaction-context.sh pre-compaction-context.sh stop.sh sync-transcript.sh; do
-  TARGET="$HOOKS_DIR/bmfote-$hook"
+  TARGET="$HOOKS_DIR/cctx-$hook"
   if [ -f "$TARGET" ]; then
     echo "  Updating: $TARGET"
   else
@@ -156,12 +156,12 @@ hooks_dir = os.path.expanduser("~/.claude/hooks")
 changed = False
 
 # Strip legacy non-prefixed entries left over from pre-0.5 installs.
-# Older versions wrote these script names without the "bmfote-" prefix,
+# Older versions wrote these script names without the "cctx-" prefix,
 # so an upgrade would double-register the hook and fire it twice per turn.
 LEGACY_SCRIPTS = ("post-compaction-context.sh", "pre-compaction-context.sh", "stop.sh")
 
 def _is_legacy(cmd):
-    if not cmd or "bmfote-" in cmd:
+    if not cmd or "cctx-" in cmd:
         return False
     return any(cmd.endswith("/" + s) or cmd == s for s in LEGACY_SCRIPTS)
 
@@ -182,20 +182,20 @@ for event in ("UserPromptSubmit", "PreCompact", "Stop"):
     if entries:
         hooks[event] = cleaned
 
-# Define the bmfote hooks
-bmfote_hooks = {
-    "UserPromptSubmit": f"{hooks_dir}/bmfote-post-compaction-context.sh",
-    "Stop": f"{hooks_dir}/bmfote-stop.sh",
+# Define the cctx hooks
+cctx_hooks = {
+    "UserPromptSubmit": f"{hooks_dir}/cctx-post-compaction-context.sh",
+    "Stop": f"{hooks_dir}/cctx-stop.sh",
 }
 
-for event, script_path in bmfote_hooks.items():
+for event, script_path in cctx_hooks.items():
     entries = hooks.setdefault(event, [])
 
-    # Check if bmfote hook already exists in this event
+    # Check if cctx hook already exists in this event
     already = False
     for entry in entries:
         for h in entry.get("hooks", []):
-            if "bmfote-" in h.get("command", ""):
+            if "cctx-" in h.get("command", ""):
                 already = True
                 break
 
@@ -218,18 +218,18 @@ PYEOF
 # --- Step 6: Write config file ---
 echo "[6/6] Saving configuration..."
 
-CONFIG_FILE="$HOME/.claude/bmfote.env"
+CONFIG_FILE="$HOME/.claude/cctx.env"
 cat > "$CONFIG_FILE" << EOF
-BMFOTE_URL=$BMFOTE_URL
-BMFOTE_TOKEN=$BMFOTE_TOKEN
+CCTX_URL=$CCTX_URL
+CCTX_TOKEN=$CCTX_TOKEN
 EOF
 chmod 600 "$CONFIG_FILE"
 echo "  Saved to $CONFIG_FILE"
 
-# Clean up legacy shell profile exports (hooks now source bmfote.env directly)
+# Clean up legacy shell profile exports (hooks now source cctx.env directly)
 for PROFILE in "$HOME/.zshrc" "$HOME/.bashrc" "$HOME/.zprofile" "$HOME/.bash_profile"; do
-  if [ -f "$PROFILE" ] && grep -q 'export BMFOTE_' "$PROFILE"; then
-    sed -i.bak '/^export BMFOTE_URL=/d;/^export BMFOTE_TOKEN=/d' "$PROFILE"
+  if [ -f "$PROFILE" ] && grep -q 'export CCTX_' "$PROFILE"; then
+    sed -i.bak '/^export CCTX_URL=/d;/^export CCTX_TOKEN=/d' "$PROFILE"
     rm -f "${PROFILE}.bak"
     echo "  Cleaned up legacy exports from $(basename "$PROFILE")"
   fi
@@ -239,9 +239,9 @@ done
 echo ""
 echo "Setup complete!"
 echo ""
-echo "  MCP server:  bmfote-memory → $BMFOTE_URL/mcp/"
-echo "  Hooks:       ~/.claude/hooks/bmfote-*.sh"
-echo "  Config:      ~/.claude/bmfote.env"
+echo "  MCP server:  cctx-memory → $CCTX_URL/mcp/"
+echo "  Hooks:       ~/.claude/hooks/cctx-*.sh"
+echo "  Config:      ~/.claude/cctx.env"
 echo "  Database:    $MSG_COUNT messages available"
 echo ""
 echo "Start a new Claude Code session to use memory tools. No restart needed."

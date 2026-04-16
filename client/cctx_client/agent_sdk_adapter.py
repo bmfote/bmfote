@@ -1,8 +1,8 @@
-"""Claude Agent SDK adapter — plug bmfote into a Claude Agent SDK run.
+"""Claude Agent SDK adapter — plug cctx into a Claude Agent SDK run.
 
 Usage:
     from claude_agent_sdk import ClaudeAgentOptions, query
-    from bmfote_client import agent_sdk_hooks
+    from cctx_client import agent_sdk_hooks
 
     options = ClaudeAgentOptions(hooks=agent_sdk_hooks(project="research-agent"))
     async for msg in query(prompt="...", options=options):
@@ -61,8 +61,8 @@ def agent_sdk_hooks(
 ) -> Dict[str, list]:
     """Return a hooks dict suitable for ClaudeAgentOptions(hooks=...).
 
-    `client` may be a bmfote_client.Client instance. If omitted, a default one
-    is created from BMFOTE_URL / BMFOTE_TOKEN env vars on first use.
+    `client` may be a cctx_client.Client instance. If omitted, a default one
+    is created from CCTX_URL / CCTX_TOKEN env vars on first use.
     """
     try:
         from claude_agent_sdk import HookMatcher

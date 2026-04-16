@@ -34,7 +34,7 @@ from engine.server import (  # noqa: E402
 
 TEST_WORKSPACE = "test-isolation-xyz"
 TEST_SESSION = "test-isolation-session-xyz"
-SENTINEL = "BMFOTE_WORKSPACE_ISOLATION_SENTINEL_PHRASE"
+SENTINEL = "CCTX_WORKSPACE_ISOLATION_SENTINEL_PHRASE"
 
 
 def section(label: str) -> None:
@@ -67,7 +67,7 @@ def cleanup(conn) -> None:
 def main() -> int:
     conn = get_conn()
     mode = "remote" if is_remote_db() else "local replica"
-    print(f"bmfote workspace isolation test ({mode})")
+    print(f"cctx workspace isolation test ({mode})")
     print(f"default workspace: {DEFAULT_WORKSPACE!r}")
     print(f"test workspace:    {TEST_WORKSPACE!r}")
 
@@ -112,7 +112,7 @@ def main() -> int:
     # --- 3. FTS still works for default workspace
     section("3. FTS still works for default workspace")
     # Use a high-frequency, near-guaranteed token in prod data
-    for probe in ("the", "and", "error", "bmfote"):
+    for probe in ("the", "and", "error", "cctx"):
         results = query_search(probe, limit=3)
         if results:
             ok(f"FTS hit for {probe!r}: {len(results)} results")

@@ -1,26 +1,26 @@
-# bmfote-client
+# cctx-client
 
-Drop-in Python client for **reading and writing** agent turns against a [bmfote](../README.md) memory server. An agent that uses both sides gets full cloud context — it recalls what prior sessions did, and deposits its own work for the next session to find.
+Drop-in Python client for **reading and writing** agent turns against a [cctx](../README.md) memory server. An agent that uses both sides gets full cloud context — it recalls what prior sessions did, and deposits its own work for the next session to find.
 
-If you're running agents *inside* Claude Code, you don't need the write side — the existing hooks already sync your sessions. You still might want the read side if you want your Claude Code session to pull bmfote context into a prompt manually. This package is primarily for agents built on the **Anthropic Messages API** or the **Claude Agent SDK**, which have no auto-sync path today.
+If you're running agents *inside* Claude Code, you don't need the write side — the existing hooks already sync your sessions. You still might want the read side if you want your Claude Code session to pull cctx context into a prompt manually. This package is primarily for agents built on the **Anthropic Messages API** or the **Claude Agent SDK**, which have no auto-sync path today.
 
 ## Install
 
 ```bash
-pip install -e ./client           # from the bmfote repo
+pip install -e ./client           # from the cctx repo
 # or, once published:
-# pip install bmfote-client
+# pip install cctx-client
 ```
 
-Optional extras: `pip install "bmfote-client[anthropic]"` or `"bmfote-client[agent-sdk]"` (just pulls in the respective SDK; the client itself duck-types both).
+Optional extras: `pip install "cctx-client[anthropic]"` or `"cctx-client[agent-sdk]"` (just pulls in the respective SDK; the client itself duck-types both).
 
 ## Configure
 
 The client reads two env vars:
 
 ```bash
-export BMFOTE_URL=https://your-bmfote-host
-export BMFOTE_TOKEN=...            # same API_TOKEN the server was deployed with
+export CCTX_URL=https://your-cctx-host
+export CCTX_TOKEN=...            # same API_TOKEN the server was deployed with
 ```
 
 Or pass them explicitly to `Client(url=..., token=...)`.
@@ -29,11 +29,11 @@ Or pass them explicitly to `Client(url=..., token=...)`.
 
 ```python
 import anthropic
-from bmfote_client import Client, record_exchange
+from cctx_client import Client, record_exchange
 
 anthropic_client = anthropic.Anthropic()
-bmfote = Client()
-session = bmfote.session(project="research-agent")
+cctx = Client()
+session = cctx.session(project="research-agent")
 
 user_prompt = "Summarize the key risks in our Q3 plan."
 response = anthropic_client.messages.create(
@@ -56,10 +56,10 @@ The point of cloud context is that an agent launched two days later can recall w
 
 ```python
 import anthropic
-from bmfote_client import Client, record_exchange
+from cctx_client import Client, record_exchange
 
-bmfote = Client()
-session = bmfote.session(project="research-agent")
+cctx = Client()
+session = cctx.session(project="research-agent")
 
 # Pull prior memory and stuff it into the system prompt
 context = session.recall("competitor pricing research", limit=10)
@@ -80,14 +80,14 @@ session.close()
 
 ### Pattern B — let the agent search on its own (tool use)
 
-Expose bmfote as a set of tools the model can call mid-turn. Four tools are provided, mirroring the MCP server: `search_memory`, `find_error`, `get_context`, `get_recent`.
+Expose cctx as a set of tools the model can call mid-turn. Four tools are provided, mirroring the MCP server: `search_memory`, `find_error`, `get_context`, `get_recent`.
 
 ```python
 import anthropic
-from bmfote_client import Client, TOOL_SPECS, handle_tool_use, record_exchange
+from cctx_client import Client, TOOL_SPECS, handle_tool_use, record_exchange
 
-bmfote = Client()
-session = bmfote.session(project="research-agent")
+cctx = Client()
+session = cctx.session(project="research-agent")
 ac = anthropic.Anthropic()
 
 messages = [{"role": "user", "content": "What did we decide about Acme's pricing last week?"}]
@@ -107,7 +107,7 @@ while True:
     tool_results = []
     for block in response.content:
         if block.type == "tool_use":
-            result_str = handle_tool_use(block, client=bmfote)
+            result_str = handle_tool_use(block, client=cctx)
             tool_results.append({
                 "type": "tool_result",
                 "tool_use_id": block.id,
@@ -123,7 +123,7 @@ The agent can now *decide* when to recall — if the prompt is small it may skip
 
 ### Direct read methods (if you just want the data)
 
-`Client` exposes the same four endpoints as plain Python calls — useful for scripting, dashboards, or wiring bmfote into a non-Anthropic loop:
+`Client` exposes the same four endpoints as plain Python calls — useful for scripting, dashboards, or wiring cctx into a non-Anthropic loop:
 
 ```python
 client.search("query", limit=10)                   # → list[dict]
@@ -139,7 +139,7 @@ All read methods fail silent on network error (return `[]` or `None` and log a w
 ```python
 import asyncio
 from claude_agent_sdk import ClaudeAgentOptions, query
-from bmfote_client import agent_sdk_hooks
+from cctx_client import agent_sdk_hooks
 
 async def main():
     options = ClaudeAgentOptions(
@@ -154,15 +154,15 @@ asyncio.run(main())
 
 `agent_sdk_hooks` registers callbacks for `UserPromptSubmit`, `PostToolUse`, and `Stop`. User prompts and tool calls (with truncated results) are recorded automatically.
 
-For the **read side** on Agent SDK, wire the bmfote MCP server into `ClaudeAgentOptions.mcp_servers` and the agent gets `search_memory` / `find_error` / `get_context` / `get_recent` / `remember` as tools automatically — no extra code:
+For the **read side** on Agent SDK, wire the cctx MCP server into `ClaudeAgentOptions.mcp_servers` and the agent gets `search_memory` / `find_error` / `get_context` / `get_recent` / `remember` as tools automatically — no extra code:
 
 ```python
 options = ClaudeAgentOptions(
     mcp_servers={
-        "bmfote": {
+        "cctx": {
             "type": "http",
-            "url": "https://your-bmfote-host/mcp/",
-            "headers": {"Authorization": f"Bearer {BMFOTE_TOKEN}"},
+            "url": "https://your-cctx-host/mcp/",
+            "headers": {"Authorization": f"Bearer {CCTX_TOKEN}"},
         }
     },
     hooks=agent_sdk_hooks(project="ops-agent"),
@@ -173,7 +173,7 @@ That's the full two-direction loop for Agent SDK users: read via MCP tools, writ
 
 ## Usage — Anthropic Managed Agents
 
-Managed Agents don't expose client-side lifecycle hooks the way the Agent SDK does, so the integration pattern is different: the agent writes to bmfote by **calling tools itself** (via the `remember` MCP tool), not through hooks the orchestrator registers. The agent and orchestrator roles are cleanly separated:
+Managed Agents don't expose client-side lifecycle hooks the way the Agent SDK does, so the integration pattern is different: the agent writes to cctx by **calling tools itself** (via the `remember` MCP tool), not through hooks the orchestrator registers. The agent and orchestrator roles are cleanly separated:
 
 - **Orchestrator (your Python code, n8n, whatever):** creates the session, sends the user message, streams/polls for completion. Does **not** need to pre-fetch context or post-write results.
 - **Agent (hosted at Anthropic):** calls `search_memory` / `find_error` / etc. on its own when it needs to recall, and calls `remember` when it finishes something worth persisting.
@@ -184,28 +184,28 @@ Managed Agents don't expose client-side lifecycle hooks the way the Agent SDK do
 from anthropic import Anthropic
 client = Anthropic()
 
-# 1. Store BMFOTE_TOKEN in a vault so the agent can reach bmfote with auth
+# 1. Store CCTX_TOKEN in a vault so the agent can reach cctx with auth
 vault = client.beta.vaults.create(
-    name="bmfote-credentials",
+    name="cctx-credentials",
     credentials=[{
         "type": "static_bearer",
-        "mcp_server_url": "https://your-bmfote-host/mcp/",
-        "token": os.environ["BMFOTE_TOKEN"],
+        "mcp_server_url": "https://your-cctx-host/mcp/",
+        "token": os.environ["CCTX_TOKEN"],
     }],
     betas=["managed-agents-2026-04-01"],
 )
 
-# 2. Update the agent to add bmfote as an MCP server + enable mcp_toolset
+# 2. Update the agent to add cctx as an MCP server + enable mcp_toolset
 client.beta.agents.update(
     agent_id="agent_011CZy...",
     mcp_servers=[{
         "type": "url",
-        "name": "bmfote",
-        "url": "https://your-bmfote-host/mcp/",
+        "name": "cctx",
+        "url": "https://your-cctx-host/mcp/",
     }],
     tools=[
         {"type": "agent_toolset_20260401"},     # built-in bash/read/write/etc.
-        {"type": "mcp_toolset"},                # exposes bmfote tools to the agent
+        {"type": "mcp_toolset"},                # exposes cctx tools to the agent
     ],
     betas=["managed-agents-2026-04-01"],
 )
@@ -217,7 +217,7 @@ client.beta.agents.update(
 session = client.beta.sessions.create(
     agent="agent_011CZy...",
     environment_id="env_...",
-    vault_ids=[vault.id],                       # binds the bmfote bearer
+    vault_ids=[vault.id],                       # binds the cctx bearer
     betas=["managed-agents-2026-04-01"],
 )
 
@@ -242,7 +242,7 @@ No pre-fetch, no post-write. The agent handles recall and persistence itself thr
 
 ### Tool surface exposed to the agent
 
-Once the MCP server is wired up, the agent sees **5 tools** from bmfote:
+Once the MCP server is wired up, the agent sees **5 tools** from cctx:
 
 | Tool | Direction | Use |
 |---|---|---|
@@ -271,7 +271,7 @@ Every write lands in the same `messages` table the Claude Code sync writes to:
 
 ## Failure behavior
 
-Writes use a sync POST with a **2-second timeout and fail silent**. If bmfote is down or the network is flaky, the client logs a `WARNING` via the `bmfote_client` logger and the agent keeps running. A dropped turn is lost, not retried. This is intentional for v1 — reliability upgrades (background queue + local spool) can land in v2 without breaking this API.
+Writes use a sync POST with a **2-second timeout and fail silent**. If cctx is down or the network is flaky, the client logs a `WARNING` via the `cctx_client` logger and the agent keeps running. A dropped turn is lost, not retried. This is intentional for v1 — reliability upgrades (background queue + local spool) can land in v2 without breaking this API.
 
 ## Limitations
 

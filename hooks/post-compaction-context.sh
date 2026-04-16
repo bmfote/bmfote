@@ -1,5 +1,5 @@
 #!/bin/bash
-# Cloud-native UserPromptSubmit hook for bmfote.
+# Cloud-native UserPromptSubmit hook for cctx.
 # No local database required — talks directly to the Railway API.
 #
 # What it does:
@@ -8,21 +8,21 @@
 # 3. Injects recent session archive context for the current project
 # 4. Prints API reminder so Claude knows memory is available
 #
-# Requires: BMFOTE_URL and BMFOTE_TOKEN env vars (set by bmfote installer)
+# Requires: CCTX_URL and CCTX_TOKEN env vars (set by cctx installer)
 
 # Load config — env vars take precedence, then config file
-BMFOTE_CONFIG="$HOME/.claude/bmfote.env"
-if [ -f "$BMFOTE_CONFIG" ]; then
-  . "$BMFOTE_CONFIG"
+CCTX_CONFIG="$HOME/.claude/cctx.env"
+if [ -f "$CCTX_CONFIG" ]; then
+  . "$CCTX_CONFIG"
 fi
-BMFOTE_URL="${BMFOTE_URL:-}"
-BMFOTE_TOKEN="${BMFOTE_TOKEN:-}"
+CCTX_URL="${CCTX_URL:-}"
+CCTX_TOKEN="${CCTX_TOKEN:-}"
 
-if [ -z "$BMFOTE_URL" ] || [ -z "$BMFOTE_TOKEN" ]; then
+if [ -z "$CCTX_URL" ] || [ -z "$CCTX_TOKEN" ]; then
   exit 0
 fi
 
-AUTH="Authorization: Bearer $BMFOTE_TOKEN"
+AUTH="Authorization: Bearer $CCTX_TOKEN"
 MARKER_DIR="$HOME/.claude/hooks/.compaction-markers"
 mkdir -p "$MARKER_DIR"
 
@@ -31,7 +31,7 @@ INPUT=$(cat)
 SESSION_ID=$(echo "$INPUT" | python3 -c "import sys,json; print(json.load(sys.stdin).get('session_id',''))" 2>/dev/null || echo "")
 
 # Quick health check (fail-open: if API is down or token is bad, don't block)
-if ! curl -sf --connect-timeout 1 -H "$AUTH" "$BMFOTE_URL/api/stats" > /dev/null 2>&1; then
+if ! curl -sf --connect-timeout 1 -H "$AUTH" "$CCTX_URL/api/stats" > /dev/null 2>&1; then
   exit 0
 fi
 
@@ -40,7 +40,7 @@ TRANSCRIPT_PATH=$(echo "$INPUT" | python3 -c "import sys,json; print(json.load(s
 
 if [ -n "$TRANSCRIPT_PATH" ] && [ -f "$TRANSCRIPT_PATH" ] && [ -n "$SESSION_ID" ]; then
   SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" 2>/dev/null && pwd 2>/dev/null || echo "")"
-  SYNC_SCRIPT="$SCRIPT_DIR/bmfote-sync-transcript.sh"
+  SYNC_SCRIPT="$SCRIPT_DIR/cctx-sync-transcript.sh"
   [ ! -f "$SYNC_SCRIPT" ] && SYNC_SCRIPT="$SCRIPT_DIR/sync-transcript.sh"
   if [ -f "$SYNC_SCRIPT" ]; then
     "$SYNC_SCRIPT" "$SESSION_ID" "$TRANSCRIPT_PATH" &
@@ -63,11 +63,11 @@ if [ -n "$SESSION_ID" ]; then
     echo "$CURRENT_COUNT" > "$MARKER_FILE"
 
     RECENT=$(curl -s --connect-timeout 2 --max-time 5 -H "$AUTH" \
-      "$BMFOTE_URL/api/recent?hours=8&limit=40&session_id=$SESSION_ID" 2>/dev/null)
+      "$CCTX_URL/api/recent?hours=8&limit=40&session_id=$SESSION_ID" 2>/dev/null)
 
     if [ -z "$RECENT" ] || [ "$RECENT" = "[]" ]; then
       RECENT=$(curl -s --connect-timeout 2 --max-time 5 -H "$AUTH" \
-        "$BMFOTE_URL/api/recent?hours=8&limit=40" 2>/dev/null)
+        "$CCTX_URL/api/recent?hours=8&limit=40" 2>/dev/null)
     fi
 
     if [ -n "$RECENT" ] && [ "$RECENT" != "[]" ]; then
@@ -113,7 +113,7 @@ else:
 " 2>/dev/null || echo "")
 
 PROJECT_MSGS=$(curl -s --connect-timeout 2 --max-time 3 -H "$AUTH" \
-  "$BMFOTE_URL/api/project/$PROJECT?limit=3" 2>/dev/null)
+  "$CCTX_URL/api/project/$PROJECT?limit=3" 2>/dev/null)
 
 SESSION_CONTEXT=$(echo "$PROJECT_MSGS" | python3 -c "
 import sys, json
@@ -127,7 +127,7 @@ if msgs:
     print('\n'.join(lines))
 " 2>/dev/null)
 
-echo "Memory database available. Use MCP tools: search_memory (FTS5 search), find_error (past errors+solutions), get_context (by UUID), get_recent (last N hours), remember (write). Shell fallback (env vars are not exported, source the config first): source ~/.claude/bmfote.env && curl -s -H \"Authorization: Bearer \$BMFOTE_TOKEN\" \"\$BMFOTE_URL/api/search?q=QUERY\""
+echo "Memory database available. Use MCP tools: search_memory (FTS5 search), find_error (past errors+solutions), get_context (by UUID), get_recent (last N hours), remember (write). Shell fallback (env vars are not exported, source the config first): source ~/.claude/cctx.env && curl -s -H \"Authorization: Bearer \$CCTX_TOKEN\" \"\$CCTX_URL/api/search?q=QUERY\""
 if [ -n "$SESSION_CONTEXT" ]; then
   echo "$SESSION_CONTEXT"
 fi

@@ -1,14 +1,14 @@
-# bmfote
+# cctx
 
 Cloud-synced experiential memory for AI agents, powered by Turso (libSQL).
 
 ## Memory / Persistence (read this first)
 
-This project IS the memory system. Persist context via bmfote itself — **do not write to `~/.claude/projects/.../memory/*.md`** for this repo.
+This project IS the memory system. Persist context via cctx itself — **do not write to `~/.claude/projects/.../memory/*.md`** for this repo.
 
 - Production endpoint: `https://bmfote-api-production-7a63.up.railway.app` (Railway)
-- MCP tools: `mcp__bmfote-memory__remember`, `search_memory`, `get_recent`, `get_context`, `find_error`
-- Raw REST (fallback): `curl -H "Authorization: Bearer $BMFOTE_TOKEN" "$BMFOTE_URL/api/search?q=QUERY"`
+- MCP tools: `mcp__cctx-memory__remember`, `search_memory`, `get_recent`, `get_context`, `find_error`
+- Raw REST (fallback): `curl -H "Authorization: Bearer $CCTX_TOKEN" "$CCTX_URL/api/search?q=QUERY"`
 - Local dev server: `http://localhost:8026` (when `python -m engine.server` is running)
 
 When recalling prior conversations or saving new context, use the MCP tools above — not the markdown auto-memory system described in the global system prompt.
@@ -41,7 +41,7 @@ python -m engine.server    # Starts on PORT from .env (default 8026)
 ## Cloud vs local mode
 
 - **Local dev** (no env vars): uses embedded replica at `engine/local-replica.db` with sync to Turso.
-- **Cloud/Docker** (`BMFOTE_REMOTE_DB=1` or `RAILWAY_ENVIRONMENT` set): direct connection to Turso, no local replica. Fails closed if `API_TOKEN` is unset.
+- **Cloud/Docker** (`CCTX_REMOTE_DB=1` or `RAILWAY_ENVIRONMENT` set): direct connection to Turso, no local replica. Fails closed if `API_TOKEN` is unset.
 
 ## libsql Quirks
 

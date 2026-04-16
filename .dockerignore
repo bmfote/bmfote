@@ -14,7 +14,7 @@ node_modules
 bin
 hooks
 installer
-bmfote-*.tgz
+cctx-*.tgz
 CLAUDE.md
 README.md
 .audit-tmp

@@ -1,9 +1,9 @@
-"""Minimal demo — raw Anthropic Messages API loop writing to bmfote.
+"""Minimal demo — raw Anthropic Messages API loop writing to cctx.
 
 Run:
     pip install -e ./client anthropic
-    export BMFOTE_URL=http://localhost:8026        # or your deployed URL
-    export BMFOTE_TOKEN=...                         # if server has API_TOKEN set
+    export CCTX_URL=http://localhost:8026        # or your deployed URL
+    export CCTX_TOKEN=...                         # if server has API_TOKEN set
     export ANTHROPIC_API_KEY=...
     python client/examples/messages_api_demo.py
 """
@@ -12,7 +12,7 @@ import os
 
 import anthropic
 
-from bmfote_client import Client, record_exchange
+from cctx_client import Client, record_exchange
 
 
 def main():
@@ -25,8 +25,8 @@ def main():
         messages=[{"role": "user", "content": user_prompt}],
     )
 
-    bmfote = Client()
-    session = bmfote.session(project="bmfote-client-smoke")
+    cctx = Client()
+    session = cctx.session(project="cctx-client-smoke")
     record_exchange(session, user_prompt, response)
     session.close()
 

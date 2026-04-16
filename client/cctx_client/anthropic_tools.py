@@ -1,4 +1,4 @@
-"""Anthropic tool specs for the bmfote memory API.
+"""Anthropic tool specs for the cctx memory API.
 
 Drop `TOOL_SPECS` into `anthropic.Anthropic().messages.create(tools=...)` and
 dispatch tool_use blocks through `handle_tool_use(block, client)` to let your
@@ -161,7 +161,7 @@ def _tool_name_and_input(block: Any):
 
 
 def handle_tool_use(block: Any, client: Client) -> str:
-    """Dispatch an Anthropic tool_use block to the right bmfote read method.
+    """Dispatch an Anthropic tool_use block to the right cctx read method.
 
     Returns a string suitable for the next messages.create call's tool_result:
         {"role": "user", "content": [{"type": "tool_result", "tool_use_id": block.id, "content": result_str}]}
@@ -199,4 +199,4 @@ def handle_tool_use(block: Any, client: Client) -> str:
             client.recent(hours=hours, limit=min(int(inp.get("limit", 20)), 100)),
         )
 
-    return f"Unknown bmfote tool: {name}"
+    return f"Unknown cctx tool: {name}"

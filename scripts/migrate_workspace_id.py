@@ -36,7 +36,7 @@ def main() -> int:
 
     print("[migrate] adding messages.workspace_id ...")
     conn.execute(
-        "ALTER TABLE messages ADD COLUMN workspace_id TEXT NOT NULL DEFAULT 'bmfote-default'"
+        "ALTER TABLE messages ADD COLUMN workspace_id TEXT NOT NULL DEFAULT 'cctx-default'"
     )
     conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_messages_workspace ON messages(workspace_id)"
@@ -53,9 +53,9 @@ def main() -> int:
         return 1
 
     count_default = conn.execute(
-        "SELECT COUNT(*) FROM messages WHERE workspace_id = 'bmfote-default'"
+        "SELECT COUNT(*) FROM messages WHERE workspace_id = 'cctx-default'"
     ).fetchone()[0]
-    print(f"[done] migration complete. {count_default} messages backfilled to 'bmfote-default'")
+    print(f"[done] migration complete. {count_default} messages backfilled to 'cctx-default'")
     return 0
 
 

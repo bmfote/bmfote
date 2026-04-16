@@ -3,13 +3,13 @@ requires = ["setuptools>=68"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "bmfote-client"
+name = "cctx-client"
 version = "0.1.0"
-description = "Drop-in Python client for writing agent turns to a bmfote memory server."
+description = "Drop-in Python client for writing agent turns to a cctx memory server."
 readme = "README.md"
 requires-python = ">=3.10"
 license = { text = "MIT" }
-authors = [{ name = "bmfote" }]
+authors = [{ name = "cctx" }]
 dependencies = [
     "httpx>=0.27",
 ]
@@ -22,5 +22,5 @@ agent-sdk = ["claude-agent-sdk>=0.1.56"]
 Homepage = "https://github.com/bmfote/bmfote"
 
 [tool.setuptools.packages.find]
-include = ["bmfote_client*"]
+include = ["cctx_client*"]
 exclude = ["examples*"]

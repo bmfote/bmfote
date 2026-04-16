@@ -1,4 +1,4 @@
-"""Client + Session — thin wrapper around the bmfote REST API.
+"""Client + Session — thin wrapper around the cctx REST API.
 
 Writes go through POST endpoints; reads go through GET endpoints.
 Both fail silent with a logger warning on network errors.
@@ -14,7 +14,7 @@ from typing import Any, List, Optional
 
 import httpx
 
-logger = logging.getLogger("bmfote_client")
+logger = logging.getLogger("cctx_client")
 
 _CONTENT_CAP = 50_000
 
@@ -34,10 +34,10 @@ class Client:
         token: Optional[str] = None,
         timeout: float = 2.0,
     ):
-        self.url = (url or os.environ.get("BMFOTE_URL", "")).rstrip("/")
+        self.url = (url or os.environ.get("CCTX_URL", "")).rstrip("/")
         if not self.url:
-            raise ValueError("bmfote url missing — pass url= or set BMFOTE_URL")
-        self.token = token if token is not None else os.environ.get("BMFOTE_TOKEN", "")
+            raise ValueError("cctx url missing — pass url= or set CCTX_URL")
+        self.token = token if token is not None else os.environ.get("CCTX_TOKEN", "")
         headers = {"Authorization": f"Bearer {self.token}"} if self.token else {}
         self._http = httpx.Client(timeout=timeout, headers=headers)
 
@@ -53,19 +53,19 @@ class Client:
         try:
             r = self._http.post(f"{self.url}{path}", json=payload)
             if r.status_code >= 400:
-                logger.warning("bmfote %s returned %d: %s", path, r.status_code, r.text[:200])
+                logger.warning("cctx %s returned %d: %s", path, r.status_code, r.text[:200])
         except Exception as e:
-            logger.warning("bmfote %s failed: %s", path, e)
+            logger.warning("cctx %s failed: %s", path, e)
 
     def _get(self, path: str, params: Optional[dict] = None) -> Any:
         try:
             r = self._http.get(f"{self.url}{path}", params=params)
             if r.status_code >= 400:
-                logger.warning("bmfote %s returned %d: %s", path, r.status_code, r.text[:200])
+                logger.warning("cctx %s returned %d: %s", path, r.status_code, r.text[:200])
                 return None
             return r.json()
         except Exception as e:
-            logger.warning("bmfote %s failed: %s", path, e)
+            logger.warning("cctx %s failed: %s", path, e)
             return None
 
     # --- read endpoints (mirror engine/mcp_server.py tools) ---

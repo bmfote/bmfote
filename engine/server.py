@@ -25,13 +25,13 @@ load_dotenv()
 
 API_TOKEN = os.getenv("API_TOKEN", "")
 PORT = int(os.getenv("PORT", "8026"))
-DEFAULT_WORKSPACE = "bmfote-default"
+DEFAULT_WORKSPACE = "cctx-default"
 
 # Fail closed: refuse to start without auth on cloud deploys
 if is_remote_db() and not API_TOKEN:
     raise RuntimeError("API_TOKEN must be set on cloud deploys")
 
-logger = logging.getLogger("bmfote")
+logger = logging.getLogger("cctx")
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s %(levelname)s %(message)s",
@@ -48,7 +48,7 @@ async def lifespan(app):
         yield
 
 
-app = FastAPI(title="bmfote Memory API", version="1.0.0", lifespan=lifespan, redoc_url=None)
+app = FastAPI(title="cctx Memory API", version="1.0.0", lifespan=lifespan, redoc_url=None)
 
 # Mount MCP — its lifespan is managed by the parent app above
 app.mount("/mcp", mcp_app)
@@ -125,7 +125,7 @@ def root():
     """Zero-effort discovery. Lists core endpoints so a fresh agent doesn't
     have to curl /, /api, /search and parse OpenAPI before it can search."""
     return {
-        "name": "bmfote memory API",
+        "name": "cctx memory API",
         "search": "/api/search?q=QUERY",
         "fetch": "/api/message/{uuid}?context=1",
         "recent": "/api/recent?hours=24",
@@ -292,7 +292,7 @@ def search_messages(
     q: str,
     limit: int = Query(default=20, le=100),
     type: str = Query(default=None, description="Filter by 'user' or 'assistant'"),
-    workspace_id: str = Query(default=None, description="Workspace scope (defaults to 'bmfote-default')"),
+    workspace_id: str = Query(default=None, description="Workspace scope (defaults to 'cctx-default')"),
 ):
     try:
         return query_search(q, limit, type, workspace_id)

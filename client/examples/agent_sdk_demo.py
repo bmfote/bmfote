@@ -1,9 +1,9 @@
-"""Minimal demo — Claude Agent SDK run with bmfote hooks.
+"""Minimal demo — Claude Agent SDK run with cctx hooks.
 
 Run:
     pip install -e ./client claude-agent-sdk
-    export BMFOTE_URL=http://localhost:8026
-    export BMFOTE_TOKEN=...                # if server has API_TOKEN set
+    export CCTX_URL=http://localhost:8026
+    export CCTX_TOKEN=...                # if server has API_TOKEN set
     export ANTHROPIC_API_KEY=...
     python client/examples/agent_sdk_demo.py
 """
@@ -12,13 +12,13 @@ import asyncio
 
 from claude_agent_sdk import ClaudeAgentOptions, query
 
-from bmfote_client import agent_sdk_hooks
+from cctx_client import agent_sdk_hooks
 
 
 async def main():
     options = ClaudeAgentOptions(
         tools=["bash"],
-        hooks=agent_sdk_hooks(project="bmfote-client-smoke"),
+        hooks=agent_sdk_hooks(project="cctx-client-smoke"),
         max_turns=3,
     )
     async for message in query(

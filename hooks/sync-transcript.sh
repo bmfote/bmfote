@@ -1,33 +1,33 @@
 #!/bin/bash
-# Shared transcript sync logic for bmfote hooks.
+# Shared transcript sync logic for cctx hooks.
 # Called by both UserPromptSubmit (background) and Stop (foreground).
 #
 # Reads the local JSONL transcript and POSTs new messages to the cloud API.
 # Uses marker files for incremental sync — only new lines since last sync.
 #
-# Required env vars: BMFOTE_URL, BMFOTE_TOKEN
+# Required env vars: CCTX_URL, CCTX_TOKEN
 # Arguments: $1 = session_id, $2 = transcript_path
 
 set +e +o pipefail  # don't abort on individual failures
 
 # Load config — env vars take precedence, then config file
-BMFOTE_CONFIG="$HOME/.claude/bmfote.env"
-if [ -f "$BMFOTE_CONFIG" ]; then
-  . "$BMFOTE_CONFIG"
+CCTX_CONFIG="$HOME/.claude/cctx.env"
+if [ -f "$CCTX_CONFIG" ]; then
+  . "$CCTX_CONFIG"
 fi
-BMFOTE_URL="${BMFOTE_URL:-}"
-BMFOTE_TOKEN="${BMFOTE_TOKEN:-}"
+CCTX_URL="${CCTX_URL:-}"
+CCTX_TOKEN="${CCTX_TOKEN:-}"
 SESSION_ID="${1:-}"
 TRANSCRIPT_PATH="${2:-}"
 
-if [ -z "$BMFOTE_URL" ] || [ -z "$BMFOTE_TOKEN" ] || [ -z "$SESSION_ID" ] || [ -z "$TRANSCRIPT_PATH" ]; then
+if [ -z "$CCTX_URL" ] || [ -z "$CCTX_TOKEN" ] || [ -z "$SESSION_ID" ] || [ -z "$TRANSCRIPT_PATH" ]; then
   exit 0
 fi
 if [ ! -f "$TRANSCRIPT_PATH" ]; then
   exit 0
 fi
 
-AUTH="Authorization: Bearer $BMFOTE_TOKEN"
+AUTH="Authorization: Bearer $CCTX_TOKEN"
 SYNC_MARKER_DIR="$HOME/.claude/hooks/.sync-markers"
 mkdir -p "$SYNC_MARKER_DIR"
 
@@ -62,20 +62,20 @@ else: print('')
 " "$TRANSCRIPT_PATH" 2>/dev/null || echo "")
 
 # Ensure session exists in cloud
-curl -sf -X POST "$BMFOTE_URL/api/sessions" \
+curl -sf -X POST "$CCTX_URL/api/sessions" \
   -H "$AUTH" -H "Content-Type: application/json" \
   -d "{\"session_id\":\"$SESSION_ID\",\"project\":\"$PROJECT\"}" > /dev/null 2>&1
 
 # Read new lines and POST each message
-export BMFOTE_URL BMFOTE_TOKEN
-export BMFOTE_SESSION_ID="$SESSION_ID"
+export CCTX_URL CCTX_TOKEN
+export CCTX_SESSION_ID="$SESSION_ID"
 
 tail -n +"$((SYNCED_LINES + 1))" "$TRANSCRIPT_PATH" | python3 -c "
 import sys, json, urllib.request, os
 
-api = os.environ['BMFOTE_URL']
-token = os.environ['BMFOTE_TOKEN']
-session_id = os.environ['BMFOTE_SESSION_ID']
+api = os.environ['CCTX_URL']
+token = os.environ['CCTX_TOKEN']
+session_id = os.environ['CCTX_SESSION_ID']
 
 for line in sys.stdin:
     line = line.strip()

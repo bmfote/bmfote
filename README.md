@@ -1,4 +1,4 @@
-# bmfote
+# cctx
 
 <h4 align="center"><b>The context layer your AI tools share.</b> One memory across Claude Code, Cursor, the Messages API, and Anthropic Managed Agents — so your agents remember what you told a different agent, on a different surface, last Tuesday.</h4>
 
@@ -25,10 +25,10 @@
 
 ## Install
 
-If you already have a bmfote server running, one command wires up Claude Code:
+If you already have a cctx server running, one command wires up Claude Code:
 
 ```bash
-npx bmfote setup --url https://your-bmfote-server --token <API_TOKEN>
+npx cctx setup --url https://your-cctx-server --token <API_TOKEN>
 ```
 
 Restart Claude Code. Memory is now auto-captured and auto-recalled across sessions. No server yet? → [Host your own](#host-your-own-server) (~5 minutes).
@@ -46,29 +46,29 @@ Every AI tool you run lives in its own context.
 
 None of them can see into the others. That's not a bug in Anthropic's design — it's a consequence of each product being built by a different team for a different job. The result: you tell every tool the same things every day, and nothing compounds.
 
-**bmfote is one shared memory across all of them.** Every Claude Code turn, every Messages API call, and every Managed Agents run reads from and writes to the same searchable store. Ask any agent on any surface *"what was the ICP we agreed on last Tuesday?"* and it finds the answer no matter where the original conversation happened.
+**cctx is one shared memory across all of them.** Every Claude Code turn, every Messages API call, and every Managed Agents run reads from and writes to the same searchable store. Ask any agent on any surface *"what was the ICP we agreed on last Tuesday?"* and it finds the answer no matter where the original conversation happened.
 
 ---
 
 ## vs. Anthropic Managed Agents memory stores
 
-Anthropic shipped built-in memory stores for Managed Agents in April 2026. They're good — auto-invoked, with versioning, redact, and a console UI bmfote doesn't have. But they only connect one silo (Managed Agents) to itself. bmfote is the bridge across all four.
+Anthropic shipped built-in memory stores for Managed Agents in April 2026. They're good — auto-invoked, with versioning, redact, and a console UI cctx doesn't have. But they only connect one silo (Managed Agents) to itself. cctx is the bridge across all four.
 
-| | Managed Agents memory stores | bmfote |
+| | Managed Agents memory stores | cctx |
 |---|---|---|
 | Auto-invoked during a session | ✅ | ✅ (Claude Code hooks) |
 | Versioning, redact, console UI | ✅ | ❌ |
 | Claude Code history | ❌ | ✅ |
 | Cursor / Windsurf history | ❌ | ✅ (via MCP) |
-| Messages API agents | ❌ | ✅ (`bmfote-client`) |
-| Managed Agents sessions | ✅ | ✅ (`bmfote-agent` CLI) |
+| Messages API agents | ❌ | ✅ (`cctx-client`) |
+| Managed Agents sessions | ✅ | ✅ (`cctx-agent` CLI) |
 | Bridge between all four surfaces | ❌ | ✅ |
 | Your data, your infra | ❌ | ✅ |
 | Multi-user / team-shared (architecture) | ❌ | ✅ (`workspace_id`; UI coming) |
 
 **Use Managed Agents memory stores** if your agents live entirely inside `/v1/sessions` and you want Anthropic to manage versioning and redact for you.
 
-**Use bmfote** if you want one memory across every surface an agent can run on, owned by you, survivable if you ever leave Anthropic's walled garden.
+**Use cctx** if you want one memory across every surface an agent can run on, owned by you, survivable if you ever leave Anthropic's walled garden.
 
 ---
 
@@ -76,7 +76,7 @@ Anthropic shipped built-in memory stores for Managed Agents in April 2026. They'
 
 - 🌉 **One memory, four surfaces** — Claude Code, Cursor (via MCP), the Messages API, the Claude Agent SDK, and Anthropic Managed Agents all read from and write to the same searchable pool. The only memory layer that isn't captive to `/v1/sessions`.
 - 🪝 **Zero-glue for Claude Code** — a `UserPromptSubmit` hook auto-records every turn and a `Stop` hook finalizes each session; MCP recall tools are registered automatically so the agent can pull memory on any turn without ceremony.
-- 🐍 **Any Python agent, same surface** — `pip install bmfote-client` gives Messages API and Agent SDK agents the same recall + write loop Claude Code gets for free.
+- 🐍 **Any Python agent, same surface** — `pip install cctx-client` gives Messages API and Agent SDK agents the same recall + write loop Claude Code gets for free.
 - 🧠 **Agent-initiated writes** — agents call `remember()` to persist what matters, not just passively recall.
 - 🔒 **Your Turso, your token, your data** — self-hosted, bring-your-own-bearer. AGPL server (no closed-SaaS re-hosts) + MIT client (drop into any agent codebase, proprietary or not).
 
@@ -86,7 +86,7 @@ Five MCP tools ship out of the box: `search_memory`, `find_error`, `get_context`
 
 ## How It Works
 
-1. **Write** — every Claude Code turn is captured by a `UserPromptSubmit` hook (with a `Stop` hook finalizing the last turn on session end) and streamed to a Turso database. Non-Claude-Code agents do the same via `bmfote-client`, or by calling `remember()` mid-turn as an MCP tool.
+1. **Write** — every Claude Code turn is captured by a `UserPromptSubmit` hook (with a `Stop` hook finalizing the last turn on session end) and streamed to a Turso database. Non-Claude-Code agents do the same via `cctx-client`, or by calling `remember()` mid-turn as an MCP tool.
 2. **Search** — a FastAPI server exposes BM25 full-text search over every message, session, and tool call you've ever had with any agent.
 3. **Recall** — five MCP tools are auto-registered in Claude Code and reachable over HTTP by any MCP-speaking agent (Cursor, Managed Agents, custom Agent SDK apps).
 4. **Bridge** — because recall is HTTP + MCP and writes are SDK-based, the same memory is reachable from every surface an agent can run on. No surface owns it.
@@ -97,9 +97,9 @@ See [`CLAUDE.md`](CLAUDE.md) for architecture details — schema, FTS5 triggers,
 
 ## Proof: one memory, multiple agent identities
 
-A live three-run reproduction — **one shared store, two different agent identities, zero SDK glue** — using n8n as the orchestration layer, Anthropic Managed Agents as the runtime, and bmfote as the substrate.
+A live three-run reproduction — **one shared store, two different agent identities, zero SDK glue** — using n8n as the orchestration layer, Anthropic Managed Agents as the runtime, and cctx as the substrate.
 
-**Short version:** A brand-new Agent B with zero prior sessions correctly surfaced the work of a different Agent A via 15 MCP calls against bmfote, reconstructed a full history it had never seen, and even flagged garbage rows from an earlier debug session as "known artifacts."
+**Short version:** A brand-new Agent B with zero prior sessions correctly surfaced the work of a different Agent A via 15 MCP calls against cctx, reconstructed a full history it had never seen, and even flagged garbage rows from an earlier debug session as "known artifacts."
 
 Full reproduction — ten-node n8n workflow, exact request headers, the three-run table, and prerequisites — is in [`docs/n8n-proof.md`](docs/n8n-proof.md). Captured in commit [`438d91b`](https://github.com/bmfote/bmfote/commit/438d91b).
 
@@ -109,61 +109,61 @@ Full reproduction — ten-node n8n workflow, exact request headers, the three-ru
 
 ## What the installer does
 
-- Registers an MCP server (`bmfote-memory`) that exposes 5 memory tools to Claude Code
-- Installs hooks at `~/.claude/hooks/bmfote-*.sh` for automatic session sync
-- Writes `~/.claude/bmfote.env` with the URL and token
+- Registers an MCP server (`cctx-memory`) that exposes 5 memory tools to Claude Code
+- Installs hooks at `~/.claude/hooks/cctx-*.sh` for automatic session sync
+- Writes `~/.claude/cctx.env` with the URL and token
 - Merges hook entries into `~/.claude/settings.json`
 
-**Prerequisites:** [Claude Code](https://claude.com/claude-code) installed on this machine, and a running bmfote server. Don't have a server? See [Host your own](#host-your-own-server) — ~5 minutes. Safe to re-run; run once per machine.
+**Prerequisites:** [Claude Code](https://claude.com/claude-code) installed on this machine, and a running cctx server. Don't have a server? See [Host your own](#host-your-own-server) — ~5 minutes. Safe to re-run; run once per machine.
 
 ---
 
 ## Use from any agent SDK
 
-bmfote isn't Claude-Code-only. If your agent runs on the Messages API, the Claude Agent SDK, or Anthropic Managed Agents, install the Python client and you get the same recall + write surface with no code specific to Claude Code.
+cctx isn't Claude-Code-only. If your agent runs on the Messages API, the Claude Agent SDK, or Anthropic Managed Agents, install the Python client and you get the same recall + write surface with no code specific to Claude Code.
 
 ```bash
 pip install -e ./client
-export BMFOTE_URL=https://your-bmfote-server
-export BMFOTE_TOKEN=...
+export CCTX_URL=https://your-cctx-server
+export CCTX_TOKEN=...
 ```
 
 ### Anthropic Managed Agents — the hardest silo to bridge
 
-Managed Agents don't expose client-side hooks, so the integration flips: the agent itself calls `remember` and `search_memory` as MCP tools against bmfote. bmfote ships a `bmfote-agent` CLI that handles the whole wiring — vault + credential, environment with `allowed_hosts`, agent config with `mcp_servers` + `mcp_toolset` + `always_allow` — in one command.
+Managed Agents don't expose client-side hooks, so the integration flips: the agent itself calls `remember` and `search_memory` as MCP tools against cctx. cctx ships a `cctx-agent` CLI that handles the whole wiring — vault + credential, environment with `allowed_hosts`, agent config with `mcp_servers` + `mcp_toolset` + `always_allow` — in one command.
 
 ```bash
-# Create a memory-only agent wired to bmfote (idempotent — reruns are no-ops)
-bmfote-agent create \
+# Create a memory-only agent wired to cctx (idempotent — reruns are no-ops)
+cctx-agent create \
   --name "my agent" \
-  --system "You are a memory retrieval agent backed by bmfote."
+  --system "You are a memory retrieval agent backed by cctx."
 
 # Run it with a prompt; returns the final agent response
-bmfote-agent run <agent_id> "What did we decide about Acme last week?"
+cctx-agent run <agent_id> "What did we decide about Acme last week?"
 
 # Audit or retrofit an agent created elsewhere
-bmfote-agent doctor <agent_id> --fix
-bmfote-agent list
+cctx-agent doctor <agent_id> --fix
+cctx-agent list
 ```
 
-The CLI reads `BMFOTE_URL`, `BMFOTE_TOKEN` (from `npx bmfote setup`), and `ANTHROPIC_API_KEY` from your shell. Shared resources — a `bmfote-default` vault and `bmfote-default-env` environment — are discovered by name and created on first use, so there is no separate setup step.
+The CLI reads `CCTX_URL`, `CCTX_TOKEN` (from `npx cctx setup`), and `ANTHROPIC_API_KEY` from your shell. Shared resources — a `cctx-default` vault and `cctx-default-env` environment — are discovered by name and created on first use, so there is no separate setup step.
 
 All paths write into the same `messages` table as Claude Code sessions. See [`client/README.md`](client/README.md) for the full surface, failure semantics, and limitations.
 
 ### Claude Agent SDK — no glue code
 
-Plug the bmfote MCP server into options for reads, register hooks for writes, done:
+Plug the cctx MCP server into options for reads, register hooks for writes, done:
 
 ```python
 from claude_agent_sdk import ClaudeAgentOptions, query
-from bmfote_client import agent_sdk_hooks
+from cctx_client import agent_sdk_hooks
 
 options = ClaudeAgentOptions(
     mcp_servers={
-        "bmfote": {
+        "cctx": {
             "type": "http",
-            "url": "https://your-bmfote-server/mcp/",
-            "headers": {"Authorization": f"Bearer {BMFOTE_TOKEN}"},
+            "url": "https://your-cctx-server/mcp/",
+            "headers": {"Authorization": f"Bearer {CCTX_TOKEN}"},
         }
     },
     hooks=agent_sdk_hooks(project="ops-agent"),
@@ -180,10 +180,10 @@ Day 1 and Day 2 of an agent that continues its own research:
 
 ```python
 import anthropic
-from bmfote_client import Client, record_exchange
+from cctx_client import Client, record_exchange
 
-bmfote = Client()
-session = bmfote.session(project="research-agent")
+cctx = Client()
+session = cctx.session(project="research-agent")
 
 # 1. Recall prior memory
 prior = session.recall("competitor pricing research", limit=10)
@@ -203,10 +203,10 @@ record_exchange(session, user, response)
 session.close()
 ```
 
-Or let the agent choose when to recall by exposing bmfote as **tools it can call mid-turn**:
+Or let the agent choose when to recall by exposing cctx as **tools it can call mid-turn**:
 
 ```python
-from bmfote_client import TOOL_SPECS, handle_tool_use
+from cctx_client import TOOL_SPECS, handle_tool_use
 
 response = ac.messages.create(
     model="claude-sonnet-4-5",
@@ -214,14 +214,14 @@ response = ac.messages.create(
     tools=TOOL_SPECS,    # search_memory, find_error, get_context, get_recent, remember
     messages=[{"role": "user", "content": "What did we decide about Acme last week?"}],
 )
-# Handle any tool_use blocks with handle_tool_use(block, client=bmfote)
+# Handle any tool_use blocks with handle_tool_use(block, client=cctx)
 ```
 
 ---
 
 ## For teams — the shape of what's next
 
-bmfote is currently a single-user primitive with multi-user *architecture*. The `workspace_id` column landed recently; the surface area to use it has not. If you're running a Claude-centric team of 1–5 people who are comfortable with a self-hosted server, bmfote is deployable today. Beyond that, the gaps below are the roadmap.
+cctx is currently a single-user primitive with multi-user *architecture*. The `workspace_id` column landed recently; the surface area to use it has not. If you're running a Claude-centric team of 1–5 people who are comfortable with a self-hosted server, cctx is deployable today. Beyond that, the gaps below are the roadmap.
 
 **Works today**
 - Multi-tenant row isolation at the database level (`workspace_id` on every message)
@@ -242,7 +242,7 @@ If any of the gaps above would block your team, [open an issue](https://github.c
 
 ## Host your own server
 
-bmfote is self-hosted. You need a Turso database and any Docker-compatible host (Railway, Fly, Render, bare Docker). ~5 minutes end-to-end.
+cctx is self-hosted. You need a Turso database and any Docker-compatible host (Railway, Fly, Render, bare Docker). ~5 minutes end-to-end.
 
 <details>
 <summary><strong>Full setup walkthrough</strong> — Turso CLI, DB, schema, deploy, verify, troubleshoot</summary>
@@ -267,9 +267,9 @@ Keep this shell open. Every command below runs from inside this directory.
 ### Step 2 — Create a Turso database
 
 ```bash
-turso db create bmfote-memory
-turso db show bmfote-memory --url              # -> libsql://...
-turso db tokens create bmfote-memory --expiration none
+turso db create cctx-memory
+turso db show cctx-memory --url              # -> libsql://...
+turso db tokens create cctx-memory --expiration none
 ```
 
 Save the URL and token. You'll pass them to the server as environment variables.
@@ -277,7 +277,7 @@ Save the URL and token. You'll pass them to the server as environment variables.
 ### Step 3 — Apply the schema and generate an API token
 
 ```bash
-turso db shell bmfote-memory < engine/schema.sql
+turso db shell cctx-memory < engine/schema.sql
 openssl rand -hex 32    # save this — every client needs it
 ```
 
@@ -285,7 +285,7 @@ openssl rand -hex 32    # save this — every client needs it
 
 The server is a single `Dockerfile`. Pick your provider.
 
-> **All commands below must be run from inside the cloned `bmfote` directory** (same shell as Step 1). Your provider CLI needs to see the `Dockerfile`.
+> **All commands below must be run from inside the cloned `cctx` directory** (same shell as Step 1). Your provider CLI needs to see the `Dockerfile`.
 
 <details>
 <summary><strong>Railway</strong></summary>
@@ -319,12 +319,12 @@ fly deploy
 <summary><strong>Bare Docker</strong></summary>
 
 ```bash
-docker build -t bmfote .
+docker build -t cctx .
 docker run -d -p 8000:8000 \
   -e TURSO_DATABASE_URL=libsql://... \
   -e TURSO_AUTH_TOKEN=... \
   -e API_TOKEN=... \
-  bmfote
+  cctx
 ```
 </details>
 
@@ -348,13 +348,13 @@ curl -H "Authorization: Bearer $API_TOKEN" https://your-domain/api/stats
 
 ### Troubleshooting
 
-- **`railway up` says `Dockerfile not found` or `no build context`** — you're not inside the cloned `bmfote` directory. `cd` into it and retry.
+- **`railway up` says `Dockerfile not found` or `no build context`** — you're not inside the cloned `cctx` directory. `cd` into it and retry.
 - **`railway up` / `railway variables` says `No service linked` or `No services found`** — run `railway service`, pick or create a service, then re-run the failing command.
-- **`fly launch` offers to generate a Dockerfile** — decline. The repo already ships one; make sure you ran `fly launch` from inside `bmfote/`.
-- **`turso db shell` errors on `engine/schema.sql: No such file`** — you're not in the repo root. `cd bmfote` and retry.
+- **`fly launch` offers to generate a Dockerfile** — decline. The repo already ships one; make sure you ran `fly launch` from inside `cctx/`.
+- **`turso db shell` errors on `engine/schema.sql: No such file`** — you're not in the repo root. `cd cctx` and retry.
 - **`curl /health` returns connection refused** — the container failed to start. Check provider logs; the most common cause is a missing `API_TOKEN`, which makes the server fail closed.
 - **`curl /api/stats` returns 401** — the `API_TOKEN` on the server does not match the token in your `Authorization: Bearer ...` header.
-- **`/api/stats` returns zeros or empty** — schema was not applied. Re-run `turso db shell bmfote-memory < engine/schema.sql` from the repo root.
+- **`/api/stats` returns zeros or empty** — schema was not applied. Re-run `turso db shell cctx-memory < engine/schema.sql` from the repo root.
 
 </details>
 
@@ -373,12 +373,12 @@ Local dev uses an embedded libSQL replica at `engine/local-replica.db` that sync
 
 ## License
 
-bmfote uses a split license:
+cctx uses a split license:
 
-- **Server, hooks, installer, and CLI** — [GNU AGPL-3.0](LICENSE). If you modify bmfote and run it as a network service, AGPL-3.0 requires you to make your modified source available to your users.
+- **Server, hooks, installer, and CLI** — [GNU AGPL-3.0](LICENSE). If you modify cctx and run it as a network service, AGPL-3.0 requires you to make your modified source available to your users.
 - **Python client library** ([`client/`](client/)) — [MIT](client/LICENSE). Free to embed in proprietary agent code with no copyleft obligations.
 
-The server is AGPL so commercial re-hosters can't take bmfote, add private features, and compete as a closed SaaS. The client is MIT so you can drop it into any agent codebase — proprietary or not — without license friction.
+The server is AGPL so commercial re-hosters can't take cctx, add private features, and compete as a closed SaaS. The client is MIT so you can drop it into any agent codebase — proprietary or not — without license friction.
 
 ---
 

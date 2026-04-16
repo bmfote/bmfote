@@ -1,4 +1,4 @@
--- bmfote schema — Turso Cloud (libSQL with standard FTS5)
+-- cctx schema — Turso Cloud (libSQL with standard FTS5)
 -- Turso Cloud runs SQLite 3.45.1 with full FTS5 support.
 -- Same FTS5 syntax as local SQLite: bm25(), highlight(), MATCH.
 -- Only difference from local: no WAL pragma (Turso manages replication).
@@ -28,7 +28,7 @@ CREATE TABLE IF NOT EXISTS messages (
   input_tokens INTEGER,
   output_tokens INTEGER,
   timestamp TIMESTAMP,
-  workspace_id TEXT NOT NULL DEFAULT 'bmfote-default',
+  workspace_id TEXT NOT NULL DEFAULT 'cctx-default',
   FOREIGN KEY (session_id) REFERENCES sessions(session_id)
 );
 

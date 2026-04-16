@@ -18,9 +18,9 @@ def is_remote_db() -> bool:
     """True in cloud/Docker mode (direct libSQL), False for local dev (embedded replica).
 
     RAILWAY_ENVIRONMENT is kept as a backward-compat fallback so existing Railway
-    deployments keep working during the transition to BMFOTE_REMOTE_DB.
+    deployments keep working during the transition to CCTX_REMOTE_DB.
     """
-    return bool(os.getenv("BMFOTE_REMOTE_DB") or os.getenv("RAILWAY_ENVIRONMENT"))
+    return bool(os.getenv("CCTX_REMOTE_DB") or os.getenv("RAILWAY_ENVIRONMENT"))
 
 
 def get_connection():

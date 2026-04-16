@@ -8,10 +8,10 @@ const command = args[0];
 
 if (!command || command === "--help" || command === "-h") {
   console.log(`
-bmfote — cloud context for AI agents
+cctx — cloud context for AI agents
 
 Usage:
-  npx bmfote setup --url <API_URL> --token <API_TOKEN>
+  npx cctx setup --url <API_URL> --token <API_TOKEN>
 
 To deploy your own backend, see:
   https://github.com/bmfote/bmfote#part-1-deploy-the-server
@@ -21,7 +21,7 @@ To deploy your own backend, see:
 
 if (command !== "setup") {
   console.error(`Unknown command: ${command}`);
-  console.error('Run "npx bmfote --help" for usage.');
+  console.error('Run "npx cctx --help" for usage.');
   process.exit(1);
 }
 

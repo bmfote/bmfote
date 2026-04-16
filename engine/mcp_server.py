@@ -21,7 +21,7 @@ from engine.db import get_conn, is_remote_db
 _on_cloud = is_remote_db()
 
 mcp = FastMCP(
-    "bmfote-memory",
+    "cctx-memory",
     streamable_http_path="/",
     transport_security=TransportSecuritySettings(
         enable_dns_rebinding_protection=not _on_cloud,
@@ -50,7 +50,7 @@ def search_memory(
         query: FTS5 search query (supports AND, OR, NOT, "phrase", prefix*)
         limit: Max results (default 20, max 100)
         type: Filter by message type — 'user' or 'assistant'
-        workspace: Workspace scope (defaults to 'bmfote-default'). Memories in
+        workspace: Workspace scope (defaults to 'cctx-default'). Memories in
             different workspaces are fully isolated.
     """
     q_search, *_ = _get_queries()
@@ -81,7 +81,7 @@ def find_error(error_text: str, limit: int = 5, workspace: Optional[str] = None)
     Args:
         error_text: Error message or keywords to search for
         limit: Max results (default 5, max 20)
-        workspace: Workspace scope (defaults to 'bmfote-default').
+        workspace: Workspace scope (defaults to 'cctx-default').
     """
     _, q_error, *_ = _get_queries()
     limit = min(limit, 20)
@@ -118,7 +118,7 @@ def get_context(uuid: str, context: int = 1, workspace: Optional[str] = None) ->
     Args:
         uuid: Message UUID (from search results)
         context: Number of messages before/after to include (0-10, default 1)
-        workspace: Workspace scope (defaults to 'bmfote-default'). A UUID in
+        workspace: Workspace scope (defaults to 'cctx-default'). A UUID in
             another workspace returns 'not found' even if guessed correctly.
     """
     _, _, q_message, *_ = _get_queries()
@@ -153,7 +153,7 @@ def get_recent(hours: int = 24, limit: int = 50, workspace: Optional[str] = None
     Args:
         hours: How far back to look (default 24, max 168)
         limit: Max results (default 50, max 200)
-        workspace: Workspace scope (defaults to 'bmfote-default').
+        workspace: Workspace scope (defaults to 'cctx-default').
     """
     *_, q_recent = _get_queries()
     hours = min(hours, 168)
@@ -200,13 +200,13 @@ def remember(
             Defaults to "managed-agent".
         workspace: Workspace scope — the hard isolation boundary. Memories in
             different workspaces never cross over in recall. Defaults to
-            'bmfote-default'.
+            'cctx-default'.
     """
     if not content or not content.strip():
         return "Nothing to remember — content was empty."
 
     conn = get_conn()
-    ws = workspace or "bmfote-default"
+    ws = workspace or "cctx-default"
     session_id = f"agent-memory-{project}"
     now = datetime.now(timezone.utc).isoformat()
 
@@ -223,7 +223,7 @@ def remember(
     )
 
     # Write the memory as an assistant message so it's homogeneous with the
-    # rest of bmfote's data and searchable via search_memory / get_recent.
+    # rest of cctx's data and searchable via search_memory / get_recent.
     msg_uuid = str(_uuid.uuid4())
     topic_clean = (topic or "").strip()
     body = f"[{topic_clean}]\n{content}" if topic_clean else content
