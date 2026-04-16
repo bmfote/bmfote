@@ -149,17 +149,20 @@ def health():
 # =============================================================
 
 def _auto_phrase(q: str) -> str:
-    """Wrap bare multi-token queries in quotes so BM25 ranks positional
-    phrase matches instead of bag-of-words token density. Callers passing
-    explicit FTS5 syntax (quotes, booleans, NEAR, prefix*, column filters,
-    grouping) pass through unchanged. Also makes hyphenated tokens work
-    without requiring callers to quote them themselves."""
+    """Three-tier fallback for bare multi-word queries: exact phrase match
+    (highest BM25), NEAR/5 proximity (words close together), OR expansion
+    (any token present). Single tokens stay phrase-quoted. Callers passing
+    explicit FTS5 syntax pass through unchanged."""
     if not q or any(c in q for c in '"*():^'):
         return q
     tokens = q.split()
     if any(op in tokens for op in ("AND", "OR", "NOT", "NEAR")):
         return q
-    return f'"{q}"'
+    if len(tokens) == 1:
+        return f'"{q}"'
+    # Quote tokens containing FTS5-special chars (dots, colons, hyphens)
+    safe = [f'"{t}"' if any(c in t for c in ".:-/") else t for t in tokens]
+    return f'"{q}" OR NEAR({" ".join(safe)}, 5) OR ({" OR ".join(safe)})'
 
 
 def query_search(q: str, limit: int = 20, type: str = None, workspace_id: str = None):
