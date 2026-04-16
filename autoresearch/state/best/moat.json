@@ -1,0 +1,26 @@
+{
+  "composite": 10.0,
+  "experiment": 0,
+  "ts": 1776289246.648916,
+  "candidate": {
+    "channel": "SMB",
+    "contradiction": "Anthropic memory_stores is a managed black box\u2014you can't back it up with cp, grep it when retrieval fails, or inspect the SQLite file. Anthropic cannot concede file ownership without walking back their managed-service model.",
+    "counter_target": "Anthropic memory_stores",
+    "how": "bmfote is a SQLite file her team shares. Hooks auto-capture what she types, FTS retrieves it in under 100ms. No vector DB, no orchestration\u2014just 9 REST endpoints and one file. When retrieval breaks, she can open it in DB Browser and grep for what's missing.",
+    "mode": "refine",
+    "persona": "Operations lead at a 28-person electrical contracting company",
+    "what": "bmfote is cloud context\u2014the drop-in experiential memory layer that works across every AI tool and every device. The category nobody's fighting for yet. Like Dropbox moved files to the cloud, bmfote moves AI context to the cloud.",
+    "why": "The operations lead at a 28-person electrical contractor drafts estimates in ChatGPT and proposals in Claude, and neither tool remembers her crew capacity, equipment rental schedule, or material pricing\u2014so she keeps a 4-page \"AI cheat sheet\" that she pastes into every new session."
+  },
+  "verdict": {
+    "minimalism": 10,
+    "minimalism_reason": "Explicitly names SQLite, FTS, hooks, 9 REST endpoints, and what bmfote is NOT (vector DB, orchestration); matches Tier 10 exemplar.",
+    "category": 10,
+    "category_reason": "Stakes 'cloud context' explicitly, uses Post 2's exact language, claims uncontested category, adds Dropbox analogy for legibility.",
+    "persona": 10,
+    "persona_reason": "Names specific job title at specific company type with concrete observable pain (4-page AI cheat sheet pasted every session).",
+    "counter_target_valid": true,
+    "counter_target_reason": "Anthropic memory_stores is managed black-box; file ownership differentiation is real, specific, and Anthropic cannot concede it.",
+    "anti_pattern_words": []
+  }
+}

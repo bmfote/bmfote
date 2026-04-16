@@ -2,6 +2,17 @@
 
 Cloud-synced experiential memory for AI agents, powered by Turso (libSQL).
 
+## Memory / Persistence (read this first)
+
+This project IS the memory system. Persist context via bmfote itself — **do not write to `~/.claude/projects/.../memory/*.md`** for this repo.
+
+- Production endpoint: `https://bmfote-api-production-7a63.up.railway.app` (Railway)
+- MCP tools: `mcp__bmfote-memory__remember`, `search_memory`, `get_recent`, `get_context`, `find_error`
+- Raw REST (fallback): `curl -H "Authorization: Bearer $BMFOTE_TOKEN" "$BMFOTE_URL/api/search?q=QUERY"`
+- Local dev server: `http://localhost:8026` (when `python -m engine.server` is running)
+
+When recalling prior conversations or saving new context, use the MCP tools above — not the markdown auto-memory system described in the global system prompt.
+
 ## Architecture
 
 - **Engine**: FastAPI server at `engine/server.py` — 9 REST endpoints (search, messages, sync)
