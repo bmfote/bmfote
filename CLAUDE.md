@@ -2,16 +2,58 @@
 
 Cloud context for AI agents, powered by Turso (libSQL). SQLite FTS5, hooks auto-capture, <100ms retrieval.
 
-## Memory / Persistence (read this first)
+## Context / Persistence (read this first)
 
-This project IS the memory system. Persist context via cctx itself — **do not write to `~/.claude/projects/.../memory/*.md`** for this repo.
+This project IS the context system. Persist context via cctx itself — **do not write to `~/.claude/projects/.../memory/*.md`** for this repo.
 
 - Production endpoint: `https://bmfote-api-production-7a63.up.railway.app` (Railway)
 - MCP tools: `mcp__cctx-memory__remember`, `search_memory`, `get_recent`, `get_context`, `find_error`
-- Raw REST (fallback): `curl -H "Authorization: Bearer $CCTX_TOKEN" "$CCTX_URL/api/search?q=QUERY"`
 - Local dev server: `http://localhost:8026` (when `python -m engine.server` is running)
 
-When recalling prior conversations or saving new context, use the MCP tools above — not the markdown auto-memory system described in the global system prompt.
+When recalling prior conversations or saving new context, use the MCP tools or REST API below — not the markdown auto-memory system described in the global system prompt.
+
+### REST API quick reference
+
+All endpoints require `Authorization: Bearer $CCTX_TOKEN`. Source env with `source ~/.claude/bmfote.env` first (production config file is still named bmfote.env until installer is re-run).
+
+**Read:**
+```bash
+# Search (FTS5)
+curl -s -H "Authorization: Bearer $BMFOTE_TOKEN" "$BMFOTE_URL/api/search?q=QUERY"
+
+# Recent messages
+curl -s -H "Authorization: Bearer $BMFOTE_TOKEN" "$BMFOTE_URL/api/recent?hours=24&limit=50"
+
+# Full message by UUID
+curl -s -H "Authorization: Bearer $BMFOTE_TOKEN" "$BMFOTE_URL/api/message/UUID?context=1"
+
+# Stats
+curl -s -H "Authorization: Bearer $BMFOTE_TOKEN" "$BMFOTE_URL/api/stats"
+```
+
+**Write (2-step: create session, then post message):**
+```bash
+# 1. Create/upsert session (idempotent)
+curl -s -X POST "$BMFOTE_URL/api/sessions" \
+  -H "Authorization: Bearer $BMFOTE_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"session_id": "my-session-id", "project": "my-project"}'
+
+# 2. Write a message into that session
+curl -s -X POST "$BMFOTE_URL/api/messages" \
+  -H "Authorization: Bearer $BMFOTE_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "session_id": "my-session-id",
+    "uuid": "unique-msg-id",
+    "type": "assistant",
+    "role": "assistant",
+    "content": "The text to persist",
+    "timestamp": "2026-04-16T07:30:00Z"
+  }'
+```
+
+The `uuid` field must be globally unique. `ON CONFLICT(uuid)` updates content but not workspace_id. Omit `workspace_id` to use the default (`cctx-default`). Omit `timestamp` to use server time.
 
 ## Architecture
 
