@@ -1,8 +1,9 @@
 """
-Moat-track candidate proposer. Uses the claude CLI via cli_client.py so
-everything routes through Claude Code OAuth. Zero API-key requirement.
+Moat-track candidate proposer + code-track patch proposer.
+Uses the claude CLI via cli_client.py so everything routes through
+Claude Code OAuth. Zero API-key requirement.
 
-The agent assembles a system prompt from program.md + three ground-truth
+The agent assembles a system prompt from program.md + ground-truth
 posts + the rubric. The user prompt contains the mode, recent survivors
 (for anti-repetition), and optional persona hint. Output is a structured
 candidate dict via --json-schema.
@@ -13,7 +14,15 @@ from __future__ import annotations
 from typing import Any
 
 from autoresearch.cli_client import CLIError, call_structured
-from autoresearch.prepare import MOAT_DIR, MOAT_GROUND_TRUTH, MOAT_RUBRIC
+from autoresearch.prepare import (
+    CODE_DIR,
+    CODE_GROUND_TRUTH,
+    CODE_RUBRIC,
+    MOAT_DIR,
+    MOAT_GROUND_TRUTH,
+    MOAT_RUBRIC,
+    REPO_ROOT,
+)
 
 DEFAULT_MODEL = "claude-sonnet-4-5"
 
@@ -64,6 +73,47 @@ PROPOSE_CANDIDATE_SCHEMA: dict[str, Any] = {
             "description": "The category claim — 'cloud context' / 'experiential memory' framing. 1-3 sentences.",
         },
     },
+}
+
+CODE_CHANGE_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "issue_id": {"type": "string", "description": "Short kebab-case identifier"},
+        "severity": {
+            "type": "string",
+            "enum": ["critical", "high", "medium", "low", "discovered"],
+        },
+        "target_file": {
+            "type": "string",
+            "description": "Primary file path the diff modifies",
+        },
+        "description": {
+            "type": "string",
+            "description": "One sentence: what the patch does",
+        },
+        "rationale": {
+            "type": "string",
+            "description": "1-3 sentences: why this improves the codebase",
+        },
+        "unified_diff": {
+            "type": "string",
+            "description": "Complete unified diff for git apply",
+        },
+        "lines_added": {"type": "integer"},
+        "lines_removed": {"type": "integer"},
+        "files_touched": {"type": "array", "items": {"type": "string"}},
+    },
+    "required": [
+        "issue_id",
+        "severity",
+        "target_file",
+        "description",
+        "rationale",
+        "unified_diff",
+        "lines_added",
+        "lines_removed",
+        "files_touched",
+    ],
 }
 
 
@@ -173,3 +223,122 @@ def propose_candidate(
         raise AgentError(str(e)) from e
 
     return candidate
+
+
+# ---------------------------------------------------------------------------
+# Code track
+# ---------------------------------------------------------------------------
+
+_CODE_AGENT_SYSTEM_CACHE: str | None = None
+
+ENGINE_SOURCE_FILES = [
+    "engine/server.py",
+    "engine/db.py",
+    "engine/schema.sql",
+    "engine/mcp_server.py",
+    "engine/sync_conversations.py",
+]
+
+
+def build_code_agent_system_prompt() -> str:
+    """Cached system prompt for the code track agent: program.md + 4 posts +
+    audit + reference + rubric + engine source. Bit-identical across calls so
+    the CLI-side prompt cache reuses it across all experiments."""
+    global _CODE_AGENT_SYSTEM_CACHE
+    if _CODE_AGENT_SYSTEM_CACHE is not None:
+        return _CODE_AGENT_SYSTEM_CACHE
+
+    program_md = (CODE_DIR / "program.md").read_text()
+
+    posts = [
+        ("1", "minimalism", CODE_GROUND_TRUTH / "post_1_minimalism.md"),
+        ("2", "cloud-context", CODE_GROUND_TRUTH / "post_2_cloud_context.md"),
+        ("3", "shared-brain", CODE_GROUND_TRUTH / "post_3_shared_brain.md"),
+        ("4", "memory-moat", CODE_GROUND_TRUTH / "post_4_memory_moat.md"),
+    ]
+
+    audit_text = (CODE_GROUND_TRUTH / "audit.md").read_text()
+    reference_text = (CODE_GROUND_TRUTH / "reference_context_os.md").read_text()
+    rubric_text = CODE_RUBRIC.read_text()
+
+    parts: list[str] = []
+
+    # Instructions
+    parts.append(f"<instructions>{program_md}</instructions>\n\n")
+
+    # Ground truth posts
+    parts.append("<ground-truth>\n")
+    for post_id, title, path in posts:
+        parts.append(f'<post id="{post_id}" title="{title}">{path.read_text()}</post>\n')
+    parts.append("</ground-truth>\n\n")
+
+    # Audit
+    parts.append(f"<audit>{audit_text}</audit>\n\n")
+
+    # Reference
+    parts.append(f"<reference>{reference_text}</reference>\n\n")
+
+    # Rubric
+    parts.append(f"<rubric>{rubric_text}</rubric>\n\n")
+
+    # Engine source files
+    parts.append("<engine-source>\n")
+    for rel_path in ENGINE_SOURCE_FILES:
+        content = (REPO_ROOT / rel_path).read_text()
+        parts.append(f'<file path="{rel_path}">{content}</file>\n')
+    parts.append("</engine-source>")
+
+    _CODE_AGENT_SYSTEM_CACHE = "".join(parts)
+    return _CODE_AGENT_SYSTEM_CACHE
+
+
+def _format_code_survivors(survivors: list[dict[str, Any]]) -> str:
+    if not survivors:
+        return "(No recent promoted patches yet — this is an early experiment. Propose whatever scores highest.)"
+    lines = []
+    for i, s in enumerate(survivors[-5:], 1):
+        lines.append(f"Patch {i}: [{s.get('issue_id', '?')}] {s.get('description', '?')}")
+        lines.append(f"  target_file: {s.get('target_file', '?')}")
+        scores = s.get("scores", {})
+        lines.append(
+            f"  scored: cor={scores.get('correctness', '?')} "
+            f"min={scores.get('minimalism', '?')} rel={scores.get('reliability', '?')} "
+            f"tas={scores.get('taste', '?')}"
+        )
+        lines.append("")
+    return "\n".join(lines)
+
+
+def propose_code_change(
+    mode: str,
+    recent_survivors: list[dict[str, Any]] | None = None,
+    model: str = DEFAULT_MODEL,
+    timeout_s: int = 240,
+) -> dict[str, Any]:
+    """Generate one code improvement proposal. Returns the structured output dict."""
+    if mode not in ("refine", "discover"):
+        raise ValueError(f"invalid mode: {mode}")
+
+    system_prompt = build_code_agent_system_prompt()
+
+    survivors_text = _format_code_survivors(recent_survivors or [])
+
+    user_prompt = (
+        f"Mode: {mode}\n\n"
+        "Recent promoted patches (do not repeat these):\n"
+        f"{survivors_text}\n\n"
+        "Propose one code improvement. Output a complete unified diff."
+    )
+
+    try:
+        proposal = call_structured(
+            system_prompt=system_prompt,
+            user_prompt=user_prompt,
+            schema=CODE_CHANGE_SCHEMA,
+            model=model,
+            timeout_s=timeout_s,
+        )
+    except CLIError as e:
+        raise AgentError(str(e)) from e
+
+    return proposal

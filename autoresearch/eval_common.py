@@ -141,5 +141,90 @@ def read_candidate(wt_dir: Path, track: str) -> dict[str, Any] | None:
         return None
 
 
+def apply_diff(wt_dir: Path, diff_text: str) -> tuple[bool, str]:
+    """Apply a unified diff to a worktree. Returns (success, error_message)."""
+    patch_file = wt_dir / "_tmp_patch.diff"
+    try:
+        patch_file.write_text(diff_text, encoding="utf-8")
+        # dry-run check first
+        check = _run(
+            ["git", "apply", "--check", str(patch_file)],
+            cwd=wt_dir,
+            check=False,
+        )
+        if check.returncode != 0:
+            return (False, check.stderr.strip())
+        # apply for real
+        result = _run(
+            ["git", "apply", str(patch_file)],
+            cwd=wt_dir,
+            check=False,
+        )
+        if result.returncode != 0:
+            return (False, result.stderr.strip())
+        return (True, "")
+    finally:
+        patch_file.unlink(missing_ok=True)
+
+
+def validate_worktree(
+    wt_dir: Path,
+    engine_modules: list[str] | None = None,
+) -> dict:
+    """Syntax-check changed .py files and verify core engine imports."""
+    if engine_modules is None:
+        engine_modules = ["engine.server", "engine.db", "engine.mcp_server"]
+
+    changed = git_diff_names(wt_dir)
+    py_files = [f for f in changed if f.endswith(".py")]
+
+    syntax_ok = True
+    syntax_errors: list[str] = []
+    for py in py_files:
+        full = wt_dir / py
+        if not full.exists():
+            continue
+        r = _run(["python", "-m", "py_compile", str(full)], cwd=wt_dir, check=False)
+        if r.returncode != 0:
+            syntax_ok = False
+            syntax_errors.append(f"{py}: {r.stderr.strip()}")
+
+    import_cmd = "; ".join(f"import {m}" for m in engine_modules)
+    env = {**os.environ, "PYTHONPATH": str(wt_dir)}
+    imp = subprocess.run(
+        ["python", "-c", import_cmd],
+        cwd=wt_dir,
+        capture_output=True,
+        text=True,
+        check=False,
+        env=env,
+    )
+    import_ok = imp.returncode == 0
+    import_error = imp.stderr.strip() if not import_ok else None
+
+    return {
+        "syntax_ok": syntax_ok,
+        "import_ok": import_ok,
+        "syntax_errors": syntax_errors,
+        "import_error": import_error,
+    }
+
+
+def save_patch(
+    experiment_i: int,
+    issue_id: str,
+    diff_text: str,
+    track_dir: Path | None = None,
+) -> Path:
+    """Write a patch file to the code track's patches directory."""
+    if track_dir is None:
+        track_dir = HARNESS_DIR / "tracks" / "code"
+    patches_dir = track_dir / "patches"
+    patches_dir.mkdir(parents=True, exist_ok=True)
+    patch_path = patches_dir / f"{issue_id}_{experiment_i:03d}.patch"
+    patch_path.write_text(diff_text, encoding="utf-8")
+    return patch_path
+
+
 def now() -> float:
     return time.time()

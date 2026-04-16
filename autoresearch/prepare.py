@@ -3,7 +3,7 @@ Autoresearch harness — safety checks and setup. FIXED FILE, never edited by th
 
 Responsibilities, in strict order:
 1. Branch guard: refuse to run unless HEAD is `AR`. main/master are blocked by name.
-2. Remote-DB blocker: BMFOTE_REMOTE_DB must be unset. Refuse if set.
+2. Remote-DB blocker: CCTX_REMOTE_DB must be unset. Refuse if set.
 3. Ground-truth hash check: verify the three moat posts + rubric haven't drifted.
 4. Lock management: claim state/lock with current PID, release on exit.
 
@@ -29,6 +29,10 @@ EXPERIMENTS_LOG = STATE_DIR / "experiments.jsonl"
 MOAT_DIR = HARNESS_DIR / "tracks" / "moat"
 MOAT_GROUND_TRUTH = MOAT_DIR / "ground_truth"
 MOAT_RUBRIC = MOAT_DIR / "rubric.md"
+
+CODE_DIR = HARNESS_DIR / "tracks" / "code"
+CODE_GROUND_TRUTH = CODE_DIR / "ground_truth"
+CODE_RUBRIC = CODE_DIR / "rubric.md"
 
 ALLOWED_BRANCH = "AR"
 BLOCKED_BRANCHES = {"main", "master"}
@@ -79,10 +83,10 @@ def check_branch() -> str:
 
 
 def check_remote_db_blocker() -> None:
-    if os.environ.get("BMFOTE_REMOTE_DB"):
+    if os.environ.get("CCTX_REMOTE_DB"):
         raise SafetyError(
-            "BMFOTE_REMOTE_DB is set in environment — harness refuses to run. "
-            "unset it before launching: `unset BMFOTE_REMOTE_DB`."
+            "CCTX_REMOTE_DB is set in environment — harness refuses to run. "
+            "unset it before launching: `unset CCTX_REMOTE_DB`."
         )
     if os.environ.get("RAILWAY_ENVIRONMENT"):
         raise SafetyError(
@@ -91,29 +95,44 @@ def check_remote_db_blocker() -> None:
         )
 
 
-def load_ground_truth_hashes() -> dict[str, str]:
-    """Hash the three ground-truth posts. Editing any of them resets best/moat.json."""
-    expected_files = [
-        "post_1_minimalism.md",
-        "post_2_cloud_context.md",
-        "post_3_shared_brain.md",
-    ]
+def load_ground_truth_hashes(track: str = "moat") -> dict[str, str]:
+    """Hash the ground-truth files for the given track. Editing any resets best/{track}.json."""
+    if track == "moat":
+        expected_files = [
+            "post_1_minimalism.md",
+            "post_2_cloud_context.md",
+            "post_3_shared_brain.md",
+        ]
+        gt_dir = MOAT_GROUND_TRUTH
+    elif track == "code":
+        expected_files = [
+            "post_1_minimalism.md",
+            "post_2_cloud_context.md",
+            "post_3_shared_brain.md",
+            "post_4_memory_moat.md",
+            "audit.md",
+            "reference_context_os.md",
+        ]
+        gt_dir = CODE_GROUND_TRUTH
+    else:
+        raise SafetyError(f"unknown track: {track}")
     hashes: dict[str, str] = {}
     for name in expected_files:
-        path = MOAT_GROUND_TRUTH / name
+        path = gt_dir / name
         if not path.exists():
             raise SafetyError(
-                f"missing ground-truth post: {path}. "
-                "cannot run moat track without frozen posts."
+                f"missing ground-truth file: {path}. "
+                f"cannot run {track} track without frozen files."
             )
         hashes[name] = _sha256(path)
     return hashes
 
 
-def load_rubric_hash() -> str:
-    if not MOAT_RUBRIC.exists():
-        raise SafetyError(f"missing moat rubric: {MOAT_RUBRIC}")
-    return _sha256(MOAT_RUBRIC)
+def load_rubric_hash(track: str = "moat") -> str:
+    rubric = CODE_RUBRIC if track == "code" else MOAT_RUBRIC
+    if not rubric.exists():
+        raise SafetyError(f"missing {track} rubric: {rubric}")
+    return _sha256(rubric)
 
 
 def claim_lock() -> int:
@@ -169,12 +188,12 @@ def _pid_alive(pid: int) -> bool:
     return True
 
 
-def verify_safety() -> SafetyReport:
+def verify_safety(track: str = "moat") -> SafetyReport:
     """Full preflight. Call this before every experiment. Raises SafetyError on failure."""
     branch = check_branch()
     check_remote_db_blocker()
-    gt_hashes = load_ground_truth_hashes()
-    rubric_hash = load_rubric_hash()
+    gt_hashes = load_ground_truth_hashes(track)
+    rubric_hash = load_rubric_hash(track)
     pid = claim_lock()
     return SafetyReport(
         branch=branch,
@@ -184,10 +203,10 @@ def verify_safety() -> SafetyReport:
     )
 
 
-def dry_run() -> None:
+def dry_run(track: str = "moat") -> None:
     """Entry point for `runner.py --dry-run`. Prints state, exits clean."""
     try:
-        report = verify_safety()
+        report = verify_safety(track)
     except SafetyError as e:
         print(f"SAFETY FAILURE: {e}", file=sys.stderr)
         sys.exit(1)
