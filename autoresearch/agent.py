@@ -316,8 +316,9 @@ def propose_code_change(
     timeout_s: int = 240,
 ) -> dict[str, Any]:
     """Generate one code improvement proposal. Returns the structured output dict."""
-    if mode not in ("refine", "discover"):
-        raise ValueError(f"invalid mode: {mode}")
+    valid_modes = ("critical", "high", "medium", "low", "discover")
+    if mode not in valid_modes:
+        raise ValueError(f"invalid mode: {mode}, must be one of {valid_modes}")
 
     system_prompt = build_code_agent_system_prompt()
 
