@@ -14,6 +14,7 @@ from __future__ import annotations
 import json
 import os
 import subprocess
+import sys
 import tempfile
 import time
 from dataclasses import asdict, dataclass, field
@@ -184,7 +185,7 @@ def validate_worktree(
         full = wt_dir / py
         if not full.exists():
             continue
-        r = _run(["python", "-m", "py_compile", str(full)], cwd=wt_dir, check=False)
+        r = _run([sys.executable, "-m", "py_compile", str(full)], cwd=wt_dir, check=False)
         if r.returncode != 0:
             syntax_ok = False
             syntax_errors.append(f"{py}: {r.stderr.strip()}")
@@ -192,7 +193,7 @@ def validate_worktree(
     import_cmd = "; ".join(f"import {m}" for m in engine_modules)
     env = {**os.environ, "PYTHONPATH": str(wt_dir)}
     imp = subprocess.run(
-        ["python", "-c", import_cmd],
+        [sys.executable, "-c", import_cmd],
         cwd=wt_dir,
         capture_output=True,
         text=True,

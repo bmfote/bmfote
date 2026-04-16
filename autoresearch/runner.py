@@ -58,10 +58,13 @@ from autoresearch.judge import (
     code_min_axis,
     composite_score,
     min_axis,
+    recall_composite_score,
+    recall_min_axis,
 )
 
 MOAT_TARGET_JSONL = prepare.MOAT_DIR / "target.jsonl"
 CODE_TARGET_JSONL = prepare.CODE_DIR / "target.jsonl"
+RECALL_TARGET_JSONL = prepare.RECALL_DIR / "target.jsonl"
 
 # Promotion gate — designed for a "ranked list of good pitches" artifact,
 # not strict monotonic improvement. Once the agent hits the top of the scale,
@@ -637,10 +640,333 @@ def run_code_loop(max_experiments: int, max_wall_s: int | None) -> int:
     return executed
 
 
+# ---------------------------------------------------------------------------
+# Recall track
+# ---------------------------------------------------------------------------
+
+RECALL_PROMOTION_COMPOSITE_FLOOR = 7.5
+RECALL_PROMOTION_MIN_AXIS = 5
+RECALL_ALLOWED_PATHS = ["engine/"]
+
+_RECALL_MODE_SEQUENCE = [
+    "query_rewrite", "ranking", "query_rewrite", "tokenizer",
+    "query_rewrite", "discover", "ranking", "query_rewrite",
+]
+
+
+def _rotate_recall_mode(i: int) -> str:
+    return _RECALL_MODE_SEQUENCE[i % len(_RECALL_MODE_SEQUENCE)]
+
+
+def _load_recall_survivors(n: int = 5) -> list[dict[str, Any]]:
+    if not RECALL_TARGET_JSONL.exists():
+        return []
+    lines = RECALL_TARGET_JSONL.read_text().splitlines()
+    survivors: list[dict[str, Any]] = []
+    for line in lines[-n * 2:]:
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            survivors.append(json.loads(line))
+        except json.JSONDecodeError:
+            continue
+    return survivors[-n:]
+
+
+def _recall_gate_check(verdict: dict[str, Any]) -> tuple[bool, str]:
+    composite = recall_composite_score(verdict)
+    min_ax = recall_min_axis(verdict)
+
+    if min_ax < RECALL_PROMOTION_MIN_AXIS:
+        return (False, f"min_axis {min_ax} < {RECALL_PROMOTION_MIN_AXIS}")
+
+    if composite < RECALL_PROMOTION_COMPOSITE_FLOOR:
+        return (False, f"composite {composite:.2f} < floor {RECALL_PROMOTION_COMPOSITE_FLOOR}")
+
+    return (True, f"composite {composite:.2f} clears floor {RECALL_PROMOTION_COMPOSITE_FLOOR}")
+
+
+def _recall_promote(
+    candidate: dict[str, Any],
+    verdict: dict[str, Any],
+    experiment_i: int,
+    validation_result: dict[str, Any],
+    eval_metrics: dict[str, Any],
+) -> dict[str, Any]:
+    composite = recall_composite_score(verdict)
+    survivor = {
+        "experiment": experiment_i,
+        "ts": now(),
+        "change_id": candidate.get("change_id", "unknown"),
+        "category": candidate.get("category", "unknown"),
+        "target_file": candidate.get("target_file", ""),
+        "description": candidate.get("description", ""),
+        "rationale": candidate.get("rationale", ""),
+        "expected_improvements": candidate.get("expected_improvements", ""),
+        "files_touched": candidate.get("files_touched", []),
+        "lines_added": candidate.get("lines_added", 0),
+        "lines_removed": candidate.get("lines_removed", 0),
+        "unified_diff": candidate.get("unified_diff", ""),
+        "scores": {
+            "retrieval": verdict["retrieval"],
+            "minimalism": verdict["minimalism"],
+            "reliability": verdict["reliability"],
+            "taste": verdict["taste"],
+            "composite": round(composite, 3),
+        },
+        "score_reasons": {
+            "retrieval": verdict.get("retrieval_reason", ""),
+            "minimalism": verdict.get("minimalism_reason", ""),
+            "reliability": verdict.get("reliability_reason", ""),
+            "taste": verdict.get("taste_reason", ""),
+        },
+        "eval_metrics": {k: v for k, v in eval_metrics.items() if k != "per_query"},
+        "anti_pattern_words": verdict.get("anti_pattern_words", []),
+        "validation": validation_result,
+    }
+    append_jsonl(RECALL_TARGET_JSONL, survivor)
+
+    save_patch(
+        experiment_i=experiment_i,
+        issue_id=candidate.get("change_id", "unknown"),
+        diff_text=candidate.get("unified_diff", ""),
+        track_dir=prepare.RECALL_DIR,
+    )
+
+    prior = load_best("recall")
+    if composite > prior.get("composite", 0.0):
+        save_best(
+            "recall",
+            {
+                "composite": round(composite, 3),
+                "experiment": experiment_i,
+                "ts": survivor["ts"],
+                "candidate": _strip_meta(candidate),
+                "verdict": _strip_meta(verdict),
+                "eval_metrics": {k: v for k, v in eval_metrics.items() if k != "per_query"},
+            },
+        )
+    return survivor
+
+
+def _recall_drift_check(experiment_i: int) -> dict[str, Any] | None:
+    best = load_best("recall")
+    if not best.get("candidate"):
+        return None
+    candidate = best["candidate"]
+    validation = {"syntax_ok": True, "import_ok": True, "syntax_errors": [], "import_error": None}
+    eval_metrics = best.get("eval_metrics", {})
+    try:
+        verdict = judge.judge_recall_change(candidate, validation, eval_metrics)
+    except judge.JudgeError as e:
+        return {"drift_check_failed": str(e), "experiment": experiment_i}
+    new_composite = recall_composite_score(verdict)
+    old_composite = best.get("composite", 0.0)
+    delta = abs(new_composite - old_composite)
+    alarm = delta > DRIFT_HALT_THRESHOLD
+    info = {
+        "experiment": experiment_i,
+        "old_composite": round(old_composite, 3),
+        "new_composite": round(new_composite, 3),
+        "delta": round(delta, 3),
+        "alarm": alarm,
+    }
+    append_jsonl(prepare.STATE_DIR / "drift.jsonl", info)
+    return info
+
+
+def run_recall_loop(max_experiments: int, max_wall_s: int | None) -> int:
+    """Run the recall improvement loop. Returns number of experiments executed."""
+    from autoresearch.eval_recall import compute_baseline, run_eval
+
+    print(f"[runner] recall track — max {max_experiments} experiments", flush=True)
+
+    # Compute baseline metrics once
+    db_path = prepare.REPO_ROOT / "engine" / "local-replica.db"
+    eval_queries_path = prepare.RECALL_GROUND_TRUTH / "eval_queries.jsonl"
+    print("[runner] computing baseline search metrics...", flush=True)
+    baseline = compute_baseline(db_path, eval_queries_path)
+    print(
+        f"[runner] baseline: MRR@10={baseline['mrr_10']:.4f} "
+        f"P@5={baseline['mean_precision_5']:.4f} "
+        f"R@5={baseline['mean_recall_5']:.4f} "
+        f"hits={baseline['hits']}/{baseline['total']}",
+        flush=True,
+    )
+
+    start_ts = time.time()
+    executed = 0
+    promoted = 0
+    failures = 0
+
+    for i in range(max_experiments):
+        if _SHUTDOWN_REQUESTED:
+            print("[runner] shutdown requested — stopping loop", flush=True)
+            break
+        if max_wall_s is not None and (time.time() - start_ts) > max_wall_s:
+            print(f"[runner] wall-clock budget {max_wall_s}s exceeded — stopping", flush=True)
+            break
+
+        executed += 1
+        mode = _rotate_recall_mode(i)
+        survivors = _load_recall_survivors(5)
+        current_best = load_best("recall")
+        current_best_composite = current_best.get("composite", 0.0)
+
+        exp = Experiment(
+            ts=now(),
+            track="recall",
+            experiment=i,
+            mode=mode,
+        )
+
+        exp_started = time.time()
+        wt_dir = None
+        try:
+            print(
+                f"[runner] exp {i:03d} mode={mode:14s} best={current_best_composite:.2f}",
+                flush=True,
+            )
+
+            # 1. Agent proposes a search change
+            candidate = agent.propose_recall_change(
+                mode=mode,
+                recent_survivors=survivors,
+            )
+
+            exp.candidate = _strip_meta(candidate)
+            exp.agent_exit = 0
+
+            # 2. Create worktree and apply diff
+            wt_dir = git_worktree_add("AR")
+            diff_text = candidate.get("unified_diff", "")
+
+            if not diff_text.strip():
+                exp.error = "empty unified_diff"
+                exp.gate_reason = "validation: empty diff"
+                failures += 1
+                print("[runner]   SKIP: empty diff", flush=True)
+                continue
+
+            apply_ok, apply_err = apply_diff(wt_dir, diff_text)
+            if not apply_ok:
+                exp.error = f"git apply failed: {apply_err[:200]}"
+                exp.gate_reason = "validation: diff does not apply"
+                failures += 1
+                print(f"[runner]   SKIP: diff does not apply — {apply_err[:100]}", flush=True)
+                continue
+
+            # 3. Scope check
+            scope_ok, violated = scope_check(wt_dir, RECALL_ALLOWED_PATHS)
+            if not scope_ok:
+                exp.violated_scope = True
+                exp.violated_paths = violated
+                exp.gate_reason = f"validation: scope violation {violated}"
+                failures += 1
+                print(f"[runner]   SKIP: scope violation — {violated}", flush=True)
+                continue
+
+            # 4. Validate (syntax + imports)
+            validation_result = validate_worktree(wt_dir)
+            if not validation_result["syntax_ok"]:
+                exp.error = f"syntax errors: {validation_result['syntax_errors']}"
+                exp.gate_reason = "validation: syntax error"
+                failures += 1
+                print("[runner]   SKIP: syntax error", flush=True)
+                continue
+
+            if not validation_result["import_ok"]:
+                exp.error = f"import error: {validation_result['import_error']}"
+                exp.gate_reason = "validation: import error"
+                failures += 1
+                print("[runner]   SKIP: import error", flush=True)
+                continue
+
+            # 5. Run eval harness (RECALL-specific step)
+            eval_metrics = run_eval(wt_dir, db_path, eval_queries_path, baseline)
+
+            # 6. Judge scores the change (with eval metrics)
+            verdict = judge.judge_recall_change(
+                _strip_meta(candidate), validation_result, eval_metrics
+            )
+            ok, reason = _recall_gate_check(verdict)
+
+            composite = recall_composite_score(verdict)
+            exp.score = round(composite, 3)
+            exp.best_before = round(current_best_composite, 3)
+            exp.promoted = ok
+            exp.gate_reason = reason
+            exp.eval_breakdown = {
+                "retrieval": verdict["retrieval"],
+                "minimalism": verdict["minimalism"],
+                "reliability": verdict["reliability"],
+                "taste": verdict["taste"],
+                "eval_metrics": {k: v for k, v in eval_metrics.items() if k != "per_query"},
+                "reasons": {
+                    "retrieval": verdict.get("retrieval_reason", ""),
+                    "minimalism": verdict.get("minimalism_reason", ""),
+                    "reliability": verdict.get("reliability_reason", ""),
+                    "taste": verdict.get("taste_reason", ""),
+                },
+                "agent_usage": candidate.get("_usage", {}),
+                "judge_usage": verdict.get("_usage", {}),
+                "validation": validation_result,
+            }
+
+            if ok:
+                _recall_promote(candidate, verdict, i, validation_result, eval_metrics)
+                promoted += 1
+
+            elapsed = time.time() - exp_started
+            mrr_delta = eval_metrics.get("mrr_delta", 0.0)
+            tag = "[PROMOTED]" if ok else "  (discard)"
+            print(
+                f"[runner]   {tag} score={composite:.2f} "
+                f"({verdict['retrieval']}/{verdict['minimalism']}/{verdict['reliability']}/{verdict['taste']}) "
+                f"mrr_delta={mrr_delta:+.4f} "
+                f"change={candidate.get('change_id', '?')} "
+                f"t={elapsed:.1f}s — {reason}",
+                flush=True,
+            )
+
+        except Exception as e:
+            failures += 1
+            exp.error = f"{type(e).__name__}: {e}"
+            exp.agent_exit = 1
+            print(f"[runner]   ERROR: {exp.error}", flush=True)
+        finally:
+            if wt_dir is not None:
+                git_worktree_remove(wt_dir)
+            log_experiment(exp)
+
+        # Drift check every N experiments
+        if (i + 1) % DRIFT_CHECK_EVERY == 0:
+            info = _recall_drift_check(i)
+            if info and info.get("alarm"):
+                print(
+                    f"[runner] DRIFT ALARM — current best re-scored from "
+                    f"{info['old_composite']} to {info['new_composite']} "
+                    f"(delta {info['delta']}). Halting.",
+                    flush=True,
+                )
+                break
+            elif info and "drift_check_failed" in info:
+                print(f"[runner] drift check failed: {info['drift_check_failed']}", flush=True)
+
+    total_elapsed = time.time() - start_ts
+    print(
+        f"\n[runner] done. {executed} experiments, {promoted} promoted, "
+        f"{failures} failures, {total_elapsed:.0f}s total",
+        flush=True,
+    )
+    return executed
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(prog="autoresearch.runner")
-    ap.add_argument("--track", choices=["moat", "code"], default="moat",
-                    help="Which track to run (moat=positioning, code=engine improvements).")
+    ap.add_argument("--track", choices=["moat", "code", "recall"], default="moat",
+                    help="Which track to run (moat=positioning, code=engine improvements, recall=search quality).")
     ap.add_argument("--max-experiments", type=int, default=80,
                     help="Max experiments before stopping. Default 80.")
     ap.add_argument("--max-wall-s", type=int, default=None,
@@ -684,6 +1010,8 @@ def main() -> int:
             run_moat_loop(args.max_experiments, args.max_wall_s)
         elif args.track == "code":
             run_code_loop(args.max_experiments, args.max_wall_s)
+        elif args.track == "recall":
+            run_recall_loop(args.max_experiments, args.max_wall_s)
     finally:
         prepare.release_lock()
 

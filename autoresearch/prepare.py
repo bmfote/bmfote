@@ -34,6 +34,10 @@ CODE_DIR = HARNESS_DIR / "tracks" / "code"
 CODE_GROUND_TRUTH = CODE_DIR / "ground_truth"
 CODE_RUBRIC = CODE_DIR / "rubric.md"
 
+RECALL_DIR = HARNESS_DIR / "tracks" / "recall"
+RECALL_GROUND_TRUTH = RECALL_DIR / "ground_truth"
+RECALL_RUBRIC = RECALL_DIR / "rubric.md"
+
 ALLOWED_BRANCH = "AR"
 BLOCKED_BRANCHES = {"main", "master"}
 
@@ -114,6 +118,14 @@ def load_ground_truth_hashes(track: str = "moat") -> dict[str, str]:
             "reference_context_os.md",
         ]
         gt_dir = CODE_GROUND_TRUTH
+    elif track == "recall":
+        expected_files = [
+            "post_1_minimalism.md",
+            "post_2_cloud_context.md",
+            "eval_queries.jsonl",
+            "search_analysis.md",
+        ]
+        gt_dir = RECALL_GROUND_TRUTH
     else:
         raise SafetyError(f"unknown track: {track}")
     hashes: dict[str, str] = {}
@@ -129,7 +141,7 @@ def load_ground_truth_hashes(track: str = "moat") -> dict[str, str]:
 
 
 def load_rubric_hash(track: str = "moat") -> str:
-    rubric = CODE_RUBRIC if track == "code" else MOAT_RUBRIC
+    rubric = {"code": CODE_RUBRIC, "recall": RECALL_RUBRIC}.get(track, MOAT_RUBRIC)
     if not rubric.exists():
         raise SafetyError(f"missing {track} rubric: {rubric}")
     return _sha256(rubric)

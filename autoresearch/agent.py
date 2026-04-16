@@ -21,6 +21,9 @@ from autoresearch.prepare import (
     MOAT_DIR,
     MOAT_GROUND_TRUTH,
     MOAT_RUBRIC,
+    RECALL_DIR,
+    RECALL_GROUND_TRUTH,
+    RECALL_RUBRIC,
     REPO_ROOT,
 )
 
@@ -336,6 +339,167 @@ def propose_code_change(
             system_prompt=system_prompt,
             user_prompt=user_prompt,
             schema=CODE_CHANGE_SCHEMA,
+            model=model,
+            timeout_s=timeout_s,
+        )
+    except CLIError as e:
+        raise AgentError(str(e)) from e
+
+    return proposal
+
+
+# ---------------------------------------------------------------------------
+# Recall track
+# ---------------------------------------------------------------------------
+
+RECALL_CHANGE_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "change_id": {"type": "string", "description": "Short kebab-case identifier"},
+        "category": {
+            "type": "string",
+            "enum": ["query_rewrite", "ranking", "tokenizer", "discover"],
+        },
+        "target_file": {
+            "type": "string",
+            "description": "Primary file path the diff modifies",
+        },
+        "description": {
+            "type": "string",
+            "description": "One sentence: what the patch does to improve search",
+        },
+        "rationale": {
+            "type": "string",
+            "description": "1-3 sentences: why this improves retrieval quality",
+        },
+        "expected_improvements": {
+            "type": "string",
+            "description": "Which query categories should improve and why",
+        },
+        "unified_diff": {
+            "type": "string",
+            "description": "Complete unified diff for git apply",
+        },
+        "lines_added": {"type": "integer"},
+        "lines_removed": {"type": "integer"},
+        "files_touched": {"type": "array", "items": {"type": "string"}},
+    },
+    "required": [
+        "change_id",
+        "category",
+        "target_file",
+        "description",
+        "rationale",
+        "expected_improvements",
+        "unified_diff",
+        "lines_added",
+        "lines_removed",
+        "files_touched",
+    ],
+}
+
+_RECALL_AGENT_SYSTEM_CACHE: str | None = None
+
+RECALL_SOURCE_FILES = ["engine/server.py", "engine/schema.sql"]
+
+
+def build_recall_agent_system_prompt() -> str:
+    """Cached system prompt for the recall track agent: program.md + 2 posts +
+    search_analysis + rubric + engine source. Bit-identical across calls so
+    the CLI-side prompt cache reuses it across all experiments."""
+    global _RECALL_AGENT_SYSTEM_CACHE
+    if _RECALL_AGENT_SYSTEM_CACHE is not None:
+        return _RECALL_AGENT_SYSTEM_CACHE
+
+    program_md = (RECALL_DIR / "program.md").read_text()
+
+    posts = [
+        ("1", "minimalism", RECALL_GROUND_TRUTH / "post_1_minimalism.md"),
+        ("2", "cloud-context", RECALL_GROUND_TRUTH / "post_2_cloud_context.md"),
+    ]
+
+    analysis_text = (RECALL_GROUND_TRUTH / "search_analysis.md").read_text()
+    rubric_text = RECALL_RUBRIC.read_text()
+
+    parts: list[str] = []
+    parts.append(f"<instructions>{program_md}</instructions>\n\n")
+    parts.append("<ground-truth>\n")
+    for post_id, title, path in posts:
+        parts.append(f'<post id="{post_id}" title="{title}">{path.read_text()}</post>\n')
+    parts.append("</ground-truth>\n\n")
+    parts.append(f"<search-analysis>{analysis_text}</search-analysis>\n\n")
+    parts.append(f"<rubric>{rubric_text}</rubric>\n\n")
+
+    parts.append("<engine-source>\n")
+    for rel_path in RECALL_SOURCE_FILES:
+        content = (REPO_ROOT / rel_path).read_text()
+        parts.append(f'<file path="{rel_path}">{content}</file>\n')
+    parts.append("</engine-source>")
+
+    parts.append(
+        "\n\n---\n\n## OUTPUT RULES (CRITICAL FOR LATENCY)\n\n"
+        "Do not write any reasoning, preamble, explanation, or summary before "
+        "or after the structured output. Do not write a markdown header. Do not "
+        "restate your thinking. Do not write drafts. Each text field "
+        "(description, rationale, expected_improvements) must be 1–3 sentences "
+        "max — no longer. Your entire output is the structured object, nothing else."
+    )
+
+    _RECALL_AGENT_SYSTEM_CACHE = "".join(parts)
+    return _RECALL_AGENT_SYSTEM_CACHE
+
+
+def _format_recall_survivors(survivors: list[dict[str, Any]]) -> str:
+    if not survivors:
+        return "(No recent promoted patches yet — this is an early experiment. Propose whatever scores highest.)"
+    lines = []
+    for i, s in enumerate(survivors[-5:], 1):
+        lines.append(f"Patch {i}: [{s.get('change_id', '?')}] {s.get('description', '?')}")
+        lines.append(f"  target_file: {s.get('target_file', '?')}")
+        lines.append(f"  category: {s.get('category', '?')}")
+        scores = s.get("scores", {})
+        lines.append(
+            f"  scored: ret={scores.get('retrieval', '?')} "
+            f"min={scores.get('minimalism', '?')} rel={scores.get('reliability', '?')} "
+            f"tas={scores.get('taste', '?')}"
+        )
+        metrics = s.get("eval_metrics", {})
+        if metrics and not metrics.get("eval_unavailable"):
+            lines.append(
+                f"  eval: mrr_delta={metrics.get('mrr_delta', '?')} "
+                f"p5_delta={metrics.get('p5_delta', '?')}"
+            )
+        lines.append("")
+    return "\n".join(lines)
+
+
+def propose_recall_change(
+    mode: str,
+    recent_survivors: list[dict[str, Any]] | None = None,
+    model: str = DEFAULT_MODEL,
+    timeout_s: int = 240,
+) -> dict[str, Any]:
+    """Generate one recall improvement proposal. Returns the structured output dict."""
+    valid_modes = ("query_rewrite", "ranking", "tokenizer", "discover")
+    if mode not in valid_modes:
+        raise ValueError(f"invalid mode: {mode}, must be one of {valid_modes}")
+
+    system_prompt = build_recall_agent_system_prompt()
+
+    survivors_text = _format_recall_survivors(recent_survivors or [])
+
+    user_prompt = (
+        f"Mode: {mode}\n\n"
+        "Recent promoted patches (do not repeat these):\n"
+        f"{survivors_text}\n\n"
+        "Propose one search improvement. Output a complete unified diff."
+    )
+
+    try:
+        proposal = call_structured(
+            system_prompt=system_prompt,
+            user_prompt=user_prompt,
+            schema=RECALL_CHANGE_SCHEMA,
             model=model,
             timeout_s=timeout_s,
         )

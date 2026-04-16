@@ -23,6 +23,8 @@ from autoresearch.prepare import (
     CODE_RUBRIC,
     MOAT_GROUND_TRUTH,
     MOAT_RUBRIC,
+    RECALL_GROUND_TRUTH,
+    RECALL_RUBRIC,
     REPO_ROOT,
 )
 
@@ -328,3 +330,154 @@ def code_composite_score(verdict: dict[str, Any]) -> float:
 
 def code_min_axis(verdict: dict[str, Any]) -> int:
     return min(verdict["correctness"], verdict["minimalism"], verdict["reliability"], verdict["taste"])
+
+
+# ---------------------------------------------------------------------------
+# Recall track
+# ---------------------------------------------------------------------------
+
+RECALL_JUDGE_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "retrieval": {"type": "integer", "minimum": 1, "maximum": 10},
+        "retrieval_reason": {"type": "string"},
+        "minimalism": {"type": "integer", "minimum": 1, "maximum": 10},
+        "minimalism_reason": {"type": "string"},
+        "reliability": {"type": "integer", "minimum": 1, "maximum": 10},
+        "reliability_reason": {"type": "string"},
+        "taste": {"type": "integer", "minimum": 1, "maximum": 10},
+        "taste_reason": {"type": "string"},
+        "anti_pattern_words": {"type": "array", "items": {"type": "string"}},
+    },
+    "required": [
+        "retrieval",
+        "retrieval_reason",
+        "minimalism",
+        "minimalism_reason",
+        "reliability",
+        "reliability_reason",
+        "taste",
+        "taste_reason",
+        "anti_pattern_words",
+    ],
+}
+
+_RECALL_JUDGE_SYSTEM_CACHE: str | None = None
+
+RECALL_SOURCE_FILES = ["engine/server.py", "engine/schema.sql"]
+
+
+def build_recall_judge_system_prompt() -> str:
+    """Cached system prompt for the recall-track judge. Bit-identical across
+    calls so the CLI-side prompt cache reuses it across all experiments."""
+    global _RECALL_JUDGE_SYSTEM_CACHE
+    if _RECALL_JUDGE_SYSTEM_CACHE is not None:
+        return _RECALL_JUDGE_SYSTEM_CACHE
+
+    posts = [
+        ("1", "minimalism", RECALL_GROUND_TRUTH / "post_1_minimalism.md"),
+        ("2", "cloud-context", RECALL_GROUND_TRUTH / "post_2_cloud_context.md"),
+    ]
+
+    analysis_text = (RECALL_GROUND_TRUTH / "search_analysis.md").read_text()
+    rubric_text = RECALL_RUBRIC.read_text()
+
+    parts: list[str] = []
+
+    parts.append(
+        "You are the recall-track judge. Score one proposed search improvement "
+        "against the four-axis rubric. You receive both the code change AND "
+        "quantitative eval metrics (MRR, precision, recall deltas). Use the "
+        "measured metrics to ground your retrieval score — don't guess.\n\n"
+    )
+
+    parts.append("<ground-truth>\n")
+    for post_id, title, path in posts:
+        parts.append(f'<post id="{post_id}" title="{title}">{path.read_text()}</post>\n')
+    parts.append("</ground-truth>\n\n")
+
+    parts.append(f"<search-analysis>{analysis_text}</search-analysis>\n\n")
+
+    parts.append(f"<rubric>{rubric_text}</rubric>\n\n")
+
+    parts.append("<engine-source>\n")
+    for rel_path in RECALL_SOURCE_FILES:
+        content = (REPO_ROOT / rel_path).read_text()
+        parts.append(f'<file path="{rel_path}">{content}</file>\n')
+    parts.append("</engine-source>\n\n")
+
+    parts.append(
+        "## YOUR TASK\n\n"
+        "The user will send you a proposed search change as a JSON object with "
+        "fields: change_id, category, target_file, description, rationale, "
+        "expected_improvements, unified_diff, lines_added, lines_removed, "
+        "files_touched. A validation result and eval metrics will also be "
+        "provided.\n\n"
+        "The EVAL METRICS include MRR@10 delta, precision@5 delta, recall@5 "
+        "delta, number of queries improved/regressed, and per-category MRR "
+        "breakdown. Use these numbers directly to score the retrieval axis.\n\n"
+        "Score it against the four axes defined in the rubric. Flag any "
+        "anti-pattern words found. Return structured output matching the "
+        "schema. Integer scores only — no floats, no ranges, no null. Lower "
+        "tier if unsure.\n\n"
+        "## OUTPUT RULES (CRITICAL FOR LATENCY)\n\n"
+        "Do not write any reasoning, preamble, explanation, or summary before "
+        "or after the structured output. Do not write a markdown header. Do not "
+        "restate the proposal. Do not explain your tier choices in prose — the "
+        "*_reason fields inside the structured output are where reasoning goes, "
+        "and each must be ONE concise sentence (max 25 words). Your entire "
+        "output is the structured object, nothing else."
+    )
+
+    _RECALL_JUDGE_SYSTEM_CACHE = "".join(parts)
+    return _RECALL_JUDGE_SYSTEM_CACHE
+
+
+def judge_recall_change(
+    proposal: dict[str, Any],
+    validation_result: dict[str, Any],
+    eval_metrics: dict[str, Any],
+    model: str = DEFAULT_MODEL,
+    timeout_s: int = 180,
+) -> dict[str, Any]:
+    """Score one recall-track proposal. Returns the verdict dict. Raises JudgeError on failure."""
+    system_prompt = build_recall_judge_system_prompt()
+
+    clean_proposal = {k: v for k, v in proposal.items() if not k.startswith("_")}
+
+    # Strip per-query details from eval metrics to keep the prompt concise
+    compact_metrics = {k: v for k, v in eval_metrics.items() if k != "per_query"}
+
+    user_prompt = (
+        "Score this proposed search improvement. Apply the rubric strictly.\n\n"
+        f"PROPOSAL:\n{json.dumps(clean_proposal, indent=2)}\n\n"
+        f"VALIDATION RESULT:\n{json.dumps(validation_result, indent=2)}\n\n"
+        f"EVAL METRICS:\n{json.dumps(compact_metrics, indent=2)}"
+    )
+
+    try:
+        verdict = call_structured(
+            system_prompt=system_prompt,
+            user_prompt=user_prompt,
+            schema=RECALL_JUDGE_SCHEMA,
+            model=model,
+            timeout_s=timeout_s,
+        )
+    except CLIError as e:
+        raise JudgeError(str(e)) from e
+
+    return verdict
+
+
+def recall_composite_score(verdict: dict[str, Any]) -> float:
+    """Weighted composite: 0.40*retrieval + 0.25*minimalism + 0.20*reliability + 0.15*taste."""
+    return (
+        0.40 * verdict["retrieval"]
+        + 0.25 * verdict["minimalism"]
+        + 0.20 * verdict["reliability"]
+        + 0.15 * verdict["taste"]
+    )
+
+
+def recall_min_axis(verdict: dict[str, Any]) -> int:
+    return min(verdict["retrieval"], verdict["minimalism"], verdict["reliability"], verdict["taste"])
