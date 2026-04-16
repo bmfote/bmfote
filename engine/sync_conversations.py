@@ -74,12 +74,8 @@ def derive_project(dirpath: str) -> str:
 # Sync
 # =============================================================
 
-def get_conn():
-    return libsql.connect(database=TURSO_URL, auth_token=TURSO_TOKEN)
-
-
 def update():
-    conn = get_conn()
+    conn = libsql.connect(database=TURSO_URL, auth_token=TURSO_TOKEN)
 
     # Get the latest timestamp we've seen
     row = conn.execute("SELECT MAX(timestamp) FROM messages").fetchone()

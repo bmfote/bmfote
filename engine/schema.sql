@@ -41,6 +41,9 @@ CREATE INDEX IF NOT EXISTS idx_messages_session ON messages(session_id);
 CREATE INDEX IF NOT EXISTS idx_messages_timestamp ON messages(timestamp);
 CREATE INDEX IF NOT EXISTS idx_messages_type ON messages(type);
 CREATE INDEX IF NOT EXISTS idx_messages_workspace ON messages(workspace_id);
+CREATE INDEX IF NOT EXISTS idx_messages_ws_parent ON messages(workspace_id, parent_uuid);
+CREATE INDEX IF NOT EXISTS idx_messages_session_ws ON messages(session_id, workspace_id);
+CREATE INDEX IF NOT EXISTS idx_messages_ws_type ON messages(workspace_id, type);
 
 -- =============================================================
 -- FTS5 virtual tables (standard SQLite FTS5 — works on Turso Cloud)

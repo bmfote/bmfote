@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """FastAPI search server for Claude memory — Turso Cloud (libSQL embedded replica)."""
 
+import hmac
 import logging
 import os
 import time
@@ -55,10 +56,11 @@ app.mount("/mcp", mcp_app)
 
 # --- Rate limiting ---
 def _get_real_ip(request: Request) -> str:
-    """Get client IP, preferring X-Forwarded-For behind a reverse proxy."""
-    forwarded = request.headers.get("x-forwarded-for")
-    if forwarded:
-        return forwarded.split(",")[0].strip()
+    """Get client IP, preferring X-Forwarded-For behind a trusted reverse proxy."""
+    if is_remote_db():
+        forwarded = request.headers.get("x-forwarded-for")
+        if forwarded:
+            return forwarded.split(",")[0].strip()
     return request.client.host if request.client else "127.0.0.1"
 
 
@@ -95,7 +97,7 @@ async def auth_middleware(request: Request, call_next):
     path = request.url.path
     if API_TOKEN and (path.startswith("/api/") or path.startswith("/mcp/")):
         auth = request.headers.get("authorization", "")
-        if not auth.startswith("Bearer ") or auth[7:] != API_TOKEN:
+        if not auth.startswith("Bearer ") or not hmac.compare_digest(auth[7:], API_TOKEN):
             return JSONResponse(status_code=401, content={"error": "unauthorized"})
     return await call_next(request)
 
@@ -135,6 +137,10 @@ def root():
 
 @app.get("/health")
 def health():
+    try:
+        get_conn().execute("SELECT 1")
+    except Exception:
+        return JSONResponse(status_code=503, content={"status": "unhealthy", "error": "database unreachable"})
     return {"status": "ok"}
 
 
@@ -185,37 +191,32 @@ def query_similar_error(error: str, limit: int = 5, workspace_id: str = None):
     error = _auto_phrase(error)
     workspace_id = workspace_id or DEFAULT_WORKSPACE
     conn = get_conn()
-    error_matches = rows_to_dicts(conn.execute("""
-        SELECT m.uuid, m.session_id, m.content, m.timestamp,
-               s.project,
-               bm25(messages_fts) as rank
-        FROM messages_fts f
-        JOIN messages m ON f.rowid = m.id
-        LEFT JOIN sessions s ON m.session_id = s.session_id
-        WHERE messages_fts MATCH ?
-          AND m.type = 'user'
-          AND m.workspace_id = ?
-        ORDER BY rank
-        LIMIT ?
-    """, (error, workspace_id, limit)))
+    results = rows_to_dicts(conn.execute("""
+        SELECT e.content AS error_content, e.project, e.timestamp,
+               e.session_id, e.uuid,
+               (SELECT m.content FROM messages m
+                WHERE m.parent_uuid = e.uuid AND m.type = 'assistant'
+                  AND m.workspace_id = ?
+                LIMIT 1) AS solution_content
+        FROM (
+            SELECT m.uuid, m.content, m.timestamp, m.session_id, s.project
+            FROM messages_fts fts
+            JOIN messages m ON m.id = fts.rowid
+            LEFT JOIN sessions s ON m.session_id = s.session_id
+            WHERE messages_fts MATCH ? AND m.type = 'user' AND m.workspace_id = ?
+            ORDER BY bm25(messages_fts)
+            LIMIT ?
+        ) e
+    """, (workspace_id, error, workspace_id, limit)))
 
-    results = []
-    for err in error_matches:
-        solution = row_to_dict(conn.execute("""
-            SELECT content, timestamp
-            FROM messages
-            WHERE parent_uuid = ? AND type = 'assistant' AND workspace_id = ?
-            LIMIT 1
-        """, (err["uuid"], workspace_id)))
-        results.append({
-            "error_context": err["content"][:800],
-            "project": err["project"],
-            "timestamp": err["timestamp"],
-            "session_id": err["session_id"],
-            "uuid": err["uuid"],
-            "solution": solution["content"][:800] if solution else None,
-        })
-    return results
+    return [{
+        "error_context": r["error_content"][:800],
+        "project": r["project"],
+        "timestamp": r["timestamp"],
+        "session_id": r["session_id"],
+        "uuid": r["uuid"],
+        "solution": r["solution_content"][:800] if r.get("solution_content") else None,
+    } for r in results]
 
 
 def query_message(uuid: str, context: int = 1, workspace_id: str = None):
@@ -240,17 +241,26 @@ def query_message(uuid: str, context: int = 1, workspace_id: str = None):
     if context == 0:
         return target
 
-    context_rows = rows_to_dicts(conn.execute("""
+    before = rows_to_dicts(conn.execute("""
         SELECT uuid, type, role, content, timestamp, model
         FROM messages
         WHERE session_id = ? AND uuid != ? AND workspace_id = ?
-        ORDER BY timestamp
-    """, (target["session_id"], uuid, workspace_id)))
+          AND timestamp <= ?
+        ORDER BY timestamp DESC
+        LIMIT ?
+    """, (target["session_id"], uuid, workspace_id, target["timestamp"], context)))
 
-    before = [m for m in context_rows if m["timestamp"] <= target["timestamp"]]
-    after = [m for m in context_rows if m["timestamp"] > target["timestamp"]]
+    after = rows_to_dicts(conn.execute("""
+        SELECT uuid, type, role, content, timestamp, model
+        FROM messages
+        WHERE session_id = ? AND uuid != ? AND workspace_id = ?
+          AND timestamp > ?
+        ORDER BY timestamp ASC
+        LIMIT ?
+    """, (target["session_id"], uuid, workspace_id, target["timestamp"], context)))
 
-    return {**target, "before": before[-context:], "after": after[:context]}
+    before = list(reversed(before))
+    return {**target, "before": before, "after": after}
 
 
 def query_recent(hours: int = 24, limit: int = 50, session_id: str = None, workspace_id: str = None):
@@ -296,8 +306,8 @@ def search_messages(
 ):
     try:
         return query_search(q, limit, type, workspace_id)
-    except Exception as e:
-        return JSONResponse(status_code=400, content={"error": f"invalid search query: {e}"})
+    except Exception:
+        return JSONResponse(status_code=400, content={"error": "invalid search query"})
 
 
 @app.get("/api/similar-error")
@@ -310,8 +320,8 @@ def similar_error(
 ):
     try:
         return query_similar_error(error, limit, workspace_id)
-    except Exception as e:
-        return JSONResponse(status_code=400, content={"error": f"invalid search query: {e}"})
+    except Exception:
+        return JSONResponse(status_code=400, content={"error": "invalid search query"})
 
 
 @app.get("/api/message/{uuid}")
