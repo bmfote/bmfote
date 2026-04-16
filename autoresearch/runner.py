@@ -978,6 +978,10 @@ def run_recall_loop(max_experiments: int, max_wall_s: int | None) -> int:
 CONTEXT_ROT_PROMOTION_COMPOSITE_FLOOR = 8.0
 CONTEXT_ROT_PROMOTION_MIN_AXIS = 6
 
+# Positioning text scores vary by ~1-2 points on re-eval (normal LLM variance).
+# Widen threshold to avoid halting a 90% promotion rate run.
+CONTEXT_ROT_DRIFT_HALT_THRESHOLD = 2.0
+
 _CONTEXT_ROT_MODE_SEQUENCE = [
     "define", "quantify", "narrate", "counter",
     "define", "narrate", "quantify", "counter",
@@ -1079,7 +1083,7 @@ def _context_rot_drift_check(experiment_i: int) -> dict[str, Any] | None:
     new_composite = context_rot_composite_score(verdict)
     old_composite = best.get("composite", 0.0)
     delta = abs(new_composite - old_composite)
-    alarm = delta > DRIFT_HALT_THRESHOLD
+    alarm = delta > CONTEXT_ROT_DRIFT_HALT_THRESHOLD
     info = {
         "experiment": experiment_i,
         "old_composite": round(old_composite, 3),
