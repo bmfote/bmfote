@@ -14,7 +14,7 @@ Does the change measurably improve search quality? Use the EVAL METRICS provided
 | High | 7–8 | Moderate MRR delta (0.08–0.15), improves multiple query categories, zero regressions |
 | Top | 9–10 | Large MRR delta (>0.15), improves majority of failing queries, zero regressions, precision and recall both improve |
 
-**Regression penalty:** If `queries_regressed > 0`, cap retrieval score at 6 regardless of MRR improvement. A change that helps some queries but breaks others is net-negative.
+**Regression penalty (proportional):** If regressions exceed improvements, cap retrieval at 4. If regressions are >20% of improved count, cap at 6. If regressions are 1-2 queries with 8+ improvements, apply a -1 penalty to the tier score instead of a hard cap. A change that improves 11 queries and regresses 1 is net-positive.
 
 **Schema change exception:** If `schema_change_detected` is true, eval metrics are unavailable. Score retrieval based on the logical soundness of the change (e.g., adding porter stemmer is well-established; adding random tokenizer options is not). Cap at 7 for schema-only changes without measured metrics.
 
