@@ -1,4 +1,4 @@
-"""FastMCP server — memory tools for Claude Code and Managed Agents.
+"""FastMCP server — cloud context tools for Claude Code and Managed Agents.
 
 Exposes 4 read tools (search_memory, find_error, get_context, get_recent)
 plus 1 write tool (remember) so agents that can't use client-side hooks —
@@ -44,7 +44,7 @@ def search_memory(
     type: Optional[str] = None,
     workspace: Optional[str] = None,
 ) -> str:
-    """Full-text search over conversation messages in a workspace.
+    """Full-text search over cloud context — all conversation messages across every agent surface. FTS5, <100ms.
 
     Args:
         query: FTS5 search query (supports AND, OR, NOT, "phrase", prefix*)
@@ -148,7 +148,7 @@ def get_context(uuid: str, context: int = 1, workspace: Optional[str] = None) ->
 
 @mcp.tool()
 def get_recent(hours: int = 24, limit: int = 50, workspace: Optional[str] = None) -> str:
-    """Get recent conversation messages — what was I working on?
+    """Get recent cloud context — what was I (or any agent) working on?
 
     Args:
         hours: How far back to look (default 24, max 168)
@@ -180,7 +180,7 @@ def remember(
     project: str = "managed-agent",
     workspace: Optional[str] = None,
 ) -> str:
-    """Save something to long-term memory for future agent sessions to recall.
+    """Save something to cloud context for any future agent session to recall.
 
     Writes into the same conversation store `search_memory` reads from, so a
     later agent run — your next session, or a different agent scoped to the

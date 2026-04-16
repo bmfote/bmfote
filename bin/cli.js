@@ -9,12 +9,13 @@ const command = args[0];
 if (!command || command === "--help" || command === "-h") {
   console.log(`
 cctx — cloud context for AI agents
+One SQLite file. Hooks auto-capture. FTS retrieves in <100ms.
 
 Usage:
   npx cctx setup --url <API_URL> --token <API_TOKEN>
 
 To deploy your own backend, see:
-  https://github.com/bmfote/bmfote#part-1-deploy-the-server
+  https://github.com/bmfote/bmfote#host-your-own-server
 `);
   process.exit(0);
 }

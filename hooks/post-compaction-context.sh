@@ -127,7 +127,7 @@ if msgs:
     print('\n'.join(lines))
 " 2>/dev/null)
 
-echo "Memory database available. Use MCP tools: search_memory (FTS5 search), find_error (past errors+solutions), get_context (by UUID), get_recent (last N hours), remember (write). Shell fallback (env vars are not exported, source the config first): source ~/.claude/cctx.env && curl -s -H \"Authorization: Bearer \$CCTX_TOKEN\" \"\$CCTX_URL/api/search?q=QUERY\""
+echo "Cloud context available. MCP tools: search_memory (FTS5, <100ms), find_error (past errors+solutions), get_context (by UUID), get_recent (last N hours), remember (write). Shell fallback: source ~/.claude/cctx.env && curl -s -H \"Authorization: Bearer \$CCTX_TOKEN\" \"\$CCTX_URL/api/search?q=QUERY\""
 if [ -n "$SESSION_CONTEXT" ]; then
   echo "$SESSION_CONTEXT"
 fi

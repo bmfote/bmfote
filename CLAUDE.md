@@ -1,6 +1,6 @@
 # cctx
 
-Cloud-synced experiential memory for AI agents, powered by Turso (libSQL).
+Cloud context for AI agents, powered by Turso (libSQL). SQLite FTS5, hooks auto-capture, <100ms retrieval.
 
 ## Memory / Persistence (read this first)
 

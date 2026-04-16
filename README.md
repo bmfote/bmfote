@@ -1,6 +1,6 @@
 # cctx
 
-<h4 align="center"><b>The context layer your AI tools share.</b> One memory across Claude Code, Cursor, the Messages API, and Anthropic Managed Agents — so your agents remember what you told a different agent, on a different surface, last Tuesday.</h4>
+<h4 align="center"><b>Cloud context for AI agents.</b> One SQLite file across Claude Code, Cursor, the Messages API, and Managed Agents. Hooks auto-capture. FTS retrieves in &lt;100ms. Like Dropbox moved files to the cloud, cctx moves AI context to the cloud.</h4>
 
 <p align="center">
   <a href="LICENSE"><img src="https://img.shields.io/badge/License-AGPL%203.0-blue.svg" alt="License"></a>
@@ -46,7 +46,7 @@ Every AI tool you run lives in its own context.
 
 None of them can see into the others. That's not a bug in Anthropic's design — it's a consequence of each product being built by a different team for a different job. The result: you tell every tool the same things every day, and nothing compounds.
 
-**cctx is one shared memory across all of them.** Every Claude Code turn, every Messages API call, and every Managed Agents run reads from and writes to the same searchable store. Ask any agent on any surface *"what was the ICP we agreed on last Tuesday?"* and it finds the answer no matter where the original conversation happened.
+**cctx is cloud context — one shared memory across all of them, in a SQLite file you own.** Every Claude Code turn, every Messages API call, and every Managed Agents run reads from and writes to the same searchable store. Ask any agent on any surface *"what was the ICP we agreed on last Tuesday?"* and it finds the answer no matter where the original conversation happened.
 
 ---
 
@@ -68,23 +68,23 @@ Anthropic shipped built-in memory stores for Managed Agents in April 2026. They'
 
 **Use Managed Agents memory stores** if your agents live entirely inside `/v1/sessions` and you want Anthropic to manage versioning and redact for you.
 
-**Use cctx** if you want one memory across every surface an agent can run on, owned by you, survivable if you ever leave Anthropic's walled garden.
+**Use cctx** if you want cloud context across every surface, in a SQLite file you own, survivable if you leave any one vendor. memory_stores is a managed black box — you can't back it up with `cp`, grep it when retrieval fails, or inspect the file.
 
 ---
 
 ## Key Features
 
-- 🌉 **One memory, four surfaces** — Claude Code, Cursor (via MCP), the Messages API, the Claude Agent SDK, and Anthropic Managed Agents all read from and write to the same searchable pool. The only memory layer that isn't captive to `/v1/sessions`.
+- 🌉 **Cloud context, one file** — a SQLite file you own. Hooks auto-capture every turn from Claude Code; MCP serves the same memory to Cursor, the Messages API, the Agent SDK, and Managed Agents. No vector DB, no framework, no orchestration.
 - 🪝 **Zero-glue for Claude Code** — a `UserPromptSubmit` hook auto-records every turn and a `Stop` hook finalizes each session; MCP recall tools are registered automatically so the agent can pull memory on any turn without ceremony.
 - 🐍 **Any Python agent, same surface** — `pip install cctx-client` gives Messages API and Agent SDK agents the same recall + write loop Claude Code gets for free.
 - 🧠 **Agent-initiated writes** — agents call `remember()` to persist what matters, not just passively recall.
 - 🔒 **Your Turso, your token, your data** — self-hosted, bring-your-own-bearer. AGPL server (no closed-SaaS re-hosts) + MIT client (drop into any agent codebase, proprietary or not).
 
-Five MCP tools ship out of the box: `search_memory`, `find_error`, `get_context`, `get_recent`, `remember`. Retrieval is SQLite FTS5 with BM25 ranking — no vector DB, no embedding pipeline, no re-index step.
+Five MCP tools ship out of the box: `search_memory`, `find_error`, `get_context`, `get_recent`, `remember`. Retrieval is SQLite FTS5 with BM25 ranking — <100ms. No vector DB, no embedding pipeline, no re-index step.
 
 ---
 
-## How It Works
+## How It Works — cloud context in four steps
 
 1. **Write** — every Claude Code turn is captured by a `UserPromptSubmit` hook (with a `Stop` hook finalizing the last turn on session end) and streamed to a Turso database. Non-Claude-Code agents do the same via `cctx-client`, or by calling `remember()` mid-turn as an MCP tool.
 2. **Search** — a FastAPI server exposes BM25 full-text search over every message, session, and tool call you've ever had with any agent.

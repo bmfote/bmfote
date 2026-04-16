@@ -52,8 +52,8 @@ fi
 # Strip trailing slash from URL
 CCTX_URL="${CCTX_URL%/}"
 
-echo "cctx setup"
-echo "============"
+echo "cctx setup — cloud context for AI agents"
+echo "==========================================="
 echo ""
 
 # --- Step 1: Verify Claude Code ---
@@ -237,11 +237,11 @@ done
 
 # --- Done ---
 echo ""
-echo "Setup complete!"
+echo "Setup complete — cloud context is live."
 echo ""
 echo "  MCP server:  cctx-memory → $CCTX_URL/mcp/"
 echo "  Hooks:       ~/.claude/hooks/cctx-*.sh"
 echo "  Config:      ~/.claude/cctx.env"
 echo "  Database:    $MSG_COUNT messages available"
 echo ""
-echo "Start a new Claude Code session to use memory tools. No restart needed."
+echo "Start a new Claude Code session — cloud context is ready. No restart needed."
