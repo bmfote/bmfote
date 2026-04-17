@@ -1,8 +1,9 @@
 {
-  "name": "cctx",
-  "version": "0.11.7",
+  "name": "cloud-context",
+  "version": "0.1.0",
   "description": "Cloud context for AI agents — one SQLite file across Claude Code, Cursor, Messages API, and Managed Agents.",
   "bin": {
+    "cloud-context": "./bin/cli.js",
     "cctx": "./bin/cli.js",
     "cctx-agent": "./bin/cctx-agent"
   },

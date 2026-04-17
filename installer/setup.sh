@@ -2,10 +2,10 @@
 # cctx setup — configure any machine for cloud memory in one command.
 #
 # Usage:
-#   npx cctx setup
+#   npx cloud-context setup
 #
 # Or curl one-liner:
-#   curl -fsSL https://raw.githubusercontent.com/cctx/cctx/main/installer/setup.sh | bash
+#   curl -fsSL https://raw.githubusercontent.com/bmfote/bmfote/main/installer/setup.sh | bash
 #
 # What it does:
 #   1. Verifies Claude Code is installed
@@ -27,13 +27,13 @@ while [[ $# -gt 0 ]]; do
   case "$1" in
     --url)  CCTX_URL="$2"; shift 2 ;;
     --token) CCTX_TOKEN="$2"; shift 2 ;;
-    setup) shift ;;  # allow "cctx setup" — just skip the word
+    setup) shift ;;  # allow "cloud-context setup" — just skip the word
     -h|--help)
-      echo "Usage: npx cctx setup --url <API_URL> --token <API_TOKEN>"
+      echo "Usage: npx cloud-context setup --url <API_URL> --token <API_TOKEN>"
       echo ""
       echo "Options (both required):"
-      echo "  --url <url>      Your cctx API URL (from 'npx cctx deploy')"
-      echo "  --token <token>  Your API token (from 'npx cctx deploy')"
+      echo "  --url <url>      Your cctx API URL (from 'npx cloud-context deploy')"
+      echo "  --token <token>  Your API token (from 'npx cloud-context deploy')"
       exit 0
       ;;
     *) echo "Unknown option: $1"; exit 1 ;;
@@ -43,7 +43,7 @@ done
 if [ -z "$CCTX_URL" ] || [ -z "$CCTX_TOKEN" ]; then
   echo "ERROR: --url and --token are required."
   echo ""
-  echo "Usage: npx cctx setup --url <API_URL> --token <API_TOKEN>"
+  echo "Usage: npx cloud-context setup --url <API_URL> --token <API_TOKEN>"
   echo ""
   echo "See https://github.com/bmfote/bmfote#part-1-deploy-the-server to get your URL and token."
   exit 1
@@ -109,7 +109,7 @@ echo "[4/6] Installing hook scripts..."
 HOOKS_DIR="$HOME/.claude/hooks"
 mkdir -p "$HOOKS_DIR"
 
-GITHUB_RAW="https://raw.githubusercontent.com/cctx/cctx/main/hooks"
+GITHUB_RAW="https://raw.githubusercontent.com/bmfote/bmfote/main/hooks"
 
 # Try local repo first, fall back to GitHub download
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" 2>/dev/null && pwd 2>/dev/null || echo "")"

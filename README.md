@@ -99,7 +99,7 @@ cctx is the only option that bridges all four surfaces — Claude Code, Cursor, 
 If you already have a cctx server running, one command wires up Claude Code:
 
 ```bash
-npx cctx setup --url https://your-cctx-server --token <API_TOKEN>
+npx cloud-context setup --url https://your-cctx-server --token <API_TOKEN>
 ```
 
 Restart Claude Code. Memory is auto-captured and auto-recalled across sessions. No server yet? → [Host your own](#host-your-own-server) (~5 minutes).
@@ -165,7 +165,7 @@ cctx-agent doctor <agent_id> --fix
 cctx-agent list
 ```
 
-The CLI reads `CCTX_URL`, `CCTX_TOKEN` (from `npx cctx setup`), and `ANTHROPIC_API_KEY` from your shell. Shared resources (a `cctx-default` vault and `cctx-default-env` environment) are discovered by name and created on first use.
+The CLI reads `CCTX_URL`, `CCTX_TOKEN` (from `npx cloud-context setup`), and `ANTHROPIC_API_KEY` from your shell. Shared resources (a `cctx-default` vault and `cctx-default-env` environment) are discovered by name and created on first use.
 
 All paths write into the same `messages` table as Claude Code sessions. See [`client/README.md`](client/README.md).
 

@@ -30,7 +30,7 @@ function requireConfig() {
   const cfg = loadConfig();
   if (!cfg) {
     console.error("cctx is not configured on this machine.");
-    console.error("Run: npx cctx setup --url <API_URL> --token <API_TOKEN>");
+    console.error("Run: npx cloud-context setup --url <API_URL> --token <API_TOKEN>");
     process.exit(1);
   }
   return cfg;
