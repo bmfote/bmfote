@@ -6,7 +6,7 @@
 # Uses marker files for incremental sync — only new lines since last sync.
 #
 # Required env vars: CCTX_URL, CCTX_TOKEN
-# Arguments: $1 = session_id, $2 = transcript_path
+# Arguments: $1 = session_id, $2 = transcript_path, $3 = workspace_id (optional)
 
 set +e +o pipefail  # don't abort on individual failures
 
@@ -19,6 +19,7 @@ CCTX_URL="${CCTX_URL:-}"
 CCTX_TOKEN="${CCTX_TOKEN:-}"
 SESSION_ID="${1:-}"
 TRANSCRIPT_PATH="${2:-}"
+WORKSPACE_ID="${3:-${CCTX_WORKSPACE:-}}"
 
 if [ -z "$CCTX_URL" ] || [ -z "$CCTX_TOKEN" ] || [ -z "$SESSION_ID" ] || [ -z "$TRANSCRIPT_PATH" ]; then
   exit 0
@@ -61,6 +62,10 @@ if len(parts) > 1:
 else: print('')
 " "$TRANSCRIPT_PATH" 2>/dev/null || echo "")
 
+# Default workspace_id to the derived project if caller didn't pass one
+WORKSPACE_ID="${WORKSPACE_ID:-$PROJECT}"
+WORKSPACE_ID="${WORKSPACE_ID:-cctx-default}"
+
 # Ensure session exists in cloud
 curl -sf -X POST "$CCTX_URL/api/sessions" \
   -H "$AUTH" -H "Content-Type: application/json" \
@@ -69,6 +74,7 @@ curl -sf -X POST "$CCTX_URL/api/sessions" \
 # Read new lines and POST each message
 export CCTX_URL CCTX_TOKEN
 export CCTX_SESSION_ID="$SESSION_ID"
+export CCTX_WORKSPACE_ID="$WORKSPACE_ID"
 
 tail -n +"$((SYNCED_LINES + 1))" "$TRANSCRIPT_PATH" | python3 -c "
 import sys, json, urllib.request, os
@@ -76,6 +82,7 @@ import sys, json, urllib.request, os
 api = os.environ['CCTX_URL']
 token = os.environ['CCTX_TOKEN']
 session_id = os.environ['CCTX_SESSION_ID']
+workspace_id = os.environ.get('CCTX_WORKSPACE_ID') or 'cctx-default'
 
 for line in sys.stdin:
     line = line.strip()
@@ -122,6 +129,7 @@ for line in sys.stdin:
         'model': model or None,
         'parent_uuid': parent,
         'timestamp': timestamp,
+        'workspace_id': workspace_id,
     }).encode()
 
     req = urllib.request.Request(

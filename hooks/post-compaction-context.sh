@@ -3,10 +3,11 @@
 # No local database required — talks directly to the Railway API.
 #
 # What it does:
-# 1. Syncs new messages from local transcript to cloud (background, non-blocking)
-# 2. Detects compaction events → injects conversation recovery from cloud
-# 3. Injects recent session archive context for the current project
-# 4. Prints API reminder so Claude knows memory is available
+# 1. Resolves the current workspace (CCTX_WORKSPACE env → transcript-path project → cctx-default)
+# 2. Syncs new messages from local transcript to cloud, tagged with workspace_id (background, non-blocking)
+# 3. Detects compaction events → injects conversation recovery from cloud
+# 4. Injects current workspace + known workspaces list + recent workspace activity
+# 5. Prints API reminder so Claude knows memory is available
 #
 # Requires: CCTX_URL and CCTX_TOKEN env vars (set by cctx installer)
 
@@ -35,15 +36,37 @@ if ! curl -sf --connect-timeout 1 -H "$AUTH" "$CCTX_URL/api/stats" > /dev/null 2
   exit 0
 fi
 
-# --- Sync transcript to cloud (background, non-blocking) ---
 TRANSCRIPT_PATH=$(echo "$INPUT" | python3 -c "import sys,json; print(json.load(sys.stdin).get('transcript_path',''))" 2>/dev/null || echo "")
 
+# --- Resolve workspace_id ---
+# Priority: CCTX_WORKSPACE env → transcript-path project derivation → cctx-default
+PROJECT=$(echo "$INPUT" | python3 -c "
+import sys, json
+data = json.load(sys.stdin)
+tp = data.get('transcript_path', '')
+parts = tp.split('/projects/')
+if len(parts) > 1:
+    project_dir = parts[1].split('/')[0]
+    if 'github_projects-' in project_dir:
+        print(project_dir.split('github_projects-')[-1])
+    elif project_dir.startswith('-Users-'):
+        print('home')
+    else:
+        print(project_dir)
+else:
+    print('')
+" 2>/dev/null || echo "")
+
+WORKSPACE_ID="${CCTX_WORKSPACE:-${PROJECT:-cctx-default}}"
+export CCTX_WORKSPACE="$WORKSPACE_ID"
+
+# --- Sync transcript to cloud (background, non-blocking) ---
 if [ -n "$TRANSCRIPT_PATH" ] && [ -f "$TRANSCRIPT_PATH" ] && [ -n "$SESSION_ID" ]; then
   SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" 2>/dev/null && pwd 2>/dev/null || echo "")"
   SYNC_SCRIPT="$SCRIPT_DIR/cctx-sync-transcript.sh"
   [ ! -f "$SYNC_SCRIPT" ] && SYNC_SCRIPT="$SCRIPT_DIR/sync-transcript.sh"
   if [ -f "$SYNC_SCRIPT" ]; then
-    "$SYNC_SCRIPT" "$SESSION_ID" "$TRANSCRIPT_PATH" &
+    "$SYNC_SCRIPT" "$SESSION_ID" "$TRANSCRIPT_PATH" "$WORKSPACE_ID" &
   fi
 fi
 
@@ -103,11 +126,11 @@ print(count)
     echo "$CURRENT_COUNT" > "$MARKER_FILE"
 
     RECENT=$(curl -s --connect-timeout 2 --max-time 5 -H "$AUTH" \
-      "$CCTX_URL/api/recent?hours=8&limit=40&session_id=$SESSION_ID" 2>/dev/null)
+      "$CCTX_URL/api/recent?hours=8&limit=40&session_id=$SESSION_ID&workspace_id=$WORKSPACE_ID" 2>/dev/null)
 
     if [ -z "$RECENT" ] || [ "$RECENT" = "[]" ]; then
       RECENT=$(curl -s --connect-timeout 2 --max-time 5 -H "$AUTH" \
-        "$CCTX_URL/api/recent?hours=8&limit=40" 2>/dev/null)
+        "$CCTX_URL/api/recent?hours=8&limit=40&workspace_id=$WORKSPACE_ID" 2>/dev/null)
     fi
 
     if [ -n "$RECENT" ] && [ "$RECENT" != "[]" ]; then
@@ -133,33 +156,21 @@ print('\n'.join(lines))
   fi
 fi
 
-# --- Normal message: project context + API reminder ---
+# --- Normal message: workspace-scoped context + API reminder ---
 
-PROJECT=$(echo "$INPUT" | python3 -c "
-import sys, json
-data = json.load(sys.stdin)
-tp = data.get('transcript_path', '')
-parts = tp.split('/projects/')
-if len(parts) > 1:
-    project_dir = parts[1].split('/')[0]
-    if 'github_projects-' in project_dir:
-        print(project_dir.split('github_projects-')[-1])
-    elif project_dir.startswith('-Users-'):
-        print('home')
-    else:
-        print(project_dir)
-else:
-    print('')
-" 2>/dev/null || echo "")
+# Fetch recent messages for this workspace (not global)
+RECENT_WS=$(curl -s --connect-timeout 2 --max-time 3 -H "$AUTH" \
+  "$CCTX_URL/api/recent?hours=168&limit=3&workspace_id=$WORKSPACE_ID" 2>/dev/null)
 
-PROJECT_MSGS=$(curl -s --connect-timeout 2 --max-time 3 -H "$AUTH" \
-  "$CCTX_URL/api/project/$PROJECT?limit=3" 2>/dev/null)
-
-SESSION_CONTEXT=$(echo "$PROJECT_MSGS" | python3 -c "
-import sys, json
-msgs = json.load(sys.stdin)
+SESSION_CONTEXT=$(echo "$RECENT_WS" | python3 -c "
+import sys, json, os
+try:
+    msgs = json.load(sys.stdin)
+except Exception:
+    msgs = []
+ws = os.environ.get('CCTX_WORKSPACE', 'cctx-default')
 if msgs:
-    lines = [f'Recent activity in {\"$PROJECT\" or \"this project\"}:']
+    lines = [f'Recent activity in {ws}:']
     for m in msgs:
         ts = (m.get('timestamp') or '')[:10]
         content = (m.get('content') or '')[:100].replace('\n', ' ')
@@ -167,7 +178,25 @@ if msgs:
     print('\n'.join(lines))
 " 2>/dev/null)
 
-echo "Cloud context available. MCP tools: search_memory (FTS5, <100ms), find_error (past errors+solutions), get_context (by UUID), get_recent (last N hours), remember (write). Shell fallback: source ~/.claude/cctx.env && curl -s -H \"Authorization: Bearer \$CCTX_TOKEN\" \"\$CCTX_URL/api/search?q=QUERY\""
+# Fetch known workspaces so Claude can recognize cross-workspace natural-language queries
+KNOWN_WS=$(curl -s --connect-timeout 2 --max-time 3 -H "$AUTH" \
+  "$CCTX_URL/api/workspaces?limit=20" 2>/dev/null)
+
+KNOWN_WS_LINE=$(echo "$KNOWN_WS" | python3 -c "
+import sys, json
+try:
+    wss = json.load(sys.stdin)
+except Exception:
+    wss = []
+names = [w.get('workspace_id') for w in wss if w.get('workspace_id')]
+if names:
+    print('Known workspaces: ' + ', '.join(names))
+" 2>/dev/null)
+
+echo "Cloud context available. Current workspace: $WORKSPACE_ID. MCP tools default to this workspace — pass workspace=\"<other>\" to cross, workspace=null for global. MCP tools: search_memory, find_error, get_context, get_recent, remember. Shell fallback: source ~/.claude/cctx.env && curl -s -H \"Authorization: Bearer \$CCTX_TOKEN\" \"\$CCTX_URL/api/search?q=QUERY&workspace_id=$WORKSPACE_ID\""
+if [ -n "$KNOWN_WS_LINE" ]; then
+  echo "$KNOWN_WS_LINE"
+fi
 if [ -n "$SESSION_CONTEXT" ]; then
   echo "$SESSION_CONTEXT"
 fi

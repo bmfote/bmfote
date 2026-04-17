@@ -560,6 +560,70 @@ def delete_bookmark(request: Request, name: str):
 
 
 # =============================================================
+# WORKSPACES — list + rename (supports cctx start picker & rename)
+# =============================================================
+
+@app.get("/api/workspaces")
+@limiter.limit("60/minute")
+def list_workspaces(request: Request, limit: int = Query(default=50, le=200)):
+    """Distinct workspaces with last activity + message count. Powers the
+    cctx start picker and the known-workspaces injection in hooks."""
+    conn = get_conn()
+    return rows_to_dicts(conn.execute(
+        """
+        SELECT workspace_id,
+               COUNT(*) AS message_count,
+               MAX(timestamp) AS last_active
+        FROM messages
+        WHERE workspace_id IS NOT NULL AND workspace_id != ''
+        GROUP BY workspace_id
+        ORDER BY last_active DESC
+        LIMIT ?
+        """,
+        (limit,),
+    ))
+
+
+class WorkspaceRename(BaseModel):
+    old_id: str = Field(max_length=200)
+    new_id: str = Field(max_length=200)
+
+
+@app.post("/api/workspaces/rename")
+@limiter.limit("10/minute")
+def rename_workspace(request: Request, r: WorkspaceRename):
+    """Rewrite workspace_id across messages (and sessions.project when it
+    matches the old slug). Idempotent — no-op if old_id has no rows."""
+    if not r.old_id or not r.new_id:
+        return JSONResponse(status_code=400, content={"error": "old_id and new_id required"})
+    if r.old_id == r.new_id:
+        return {"status": "noop", "rows": 0}
+
+    conn = get_conn()
+    result_msgs = conn.execute(
+        "UPDATE messages SET workspace_id = ? WHERE workspace_id = ?",
+        (r.new_id, r.old_id),
+    )
+    # Only rewrite sessions.project where it matches the old slug — leaves
+    # unrelated project labels alone.
+    result_sess = conn.execute(
+        "UPDATE sessions SET project = ? WHERE project = ?",
+        (r.new_id, r.old_id),
+    )
+    conn.commit()
+    if not is_remote_db():
+        conn.sync()
+
+    return {
+        "status": "ok",
+        "old_id": r.old_id,
+        "new_id": r.new_id,
+        "messages_updated": getattr(result_msgs, "rowcount", None),
+        "sessions_updated": getattr(result_sess, "rowcount", None),
+    }
+
+
+# =============================================================
 # SYNC ENDPOINT
 # =============================================================
 
@@ -572,6 +636,49 @@ def manual_sync(request: Request):
         return {"status": "skipped", "reason": "remote connection, no replica to sync"}
     conn.sync()
     return {"status": "synced"}
+
+
+# =============================================================
+# ADMIN — one-shot maintenance endpoints
+# =============================================================
+
+@app.post("/api/admin/backfill-workspace")
+@limiter.limit("2/minute")
+def backfill_workspace(request: Request):
+    """Promote sessions.project to messages.workspace_id for rows still
+    tagged 'cctx-default'. Safe + idempotent; also returns before/after
+    distribution so the caller can eyeball the migration worked."""
+    conn = get_conn()
+
+    before = rows_to_dicts(conn.execute(
+        "SELECT workspace_id, COUNT(*) AS n FROM messages GROUP BY workspace_id ORDER BY n DESC"
+    ))
+
+    conn.execute(
+        """
+        UPDATE messages
+           SET workspace_id = COALESCE(
+             (SELECT s.project FROM sessions s WHERE s.session_id = messages.session_id),
+             'cctx-default'
+           )
+         WHERE workspace_id = 'cctx-default'
+           AND EXISTS (
+             SELECT 1 FROM sessions s
+              WHERE s.session_id = messages.session_id
+                AND s.project IS NOT NULL
+                AND s.project != ''
+           )
+        """
+    )
+    conn.commit()
+    if not is_remote_db():
+        conn.sync()
+
+    after = rows_to_dicts(conn.execute(
+        "SELECT workspace_id, COUNT(*) AS n FROM messages GROUP BY workspace_id ORDER BY n DESC"
+    ))
+
+    return {"status": "ok", "before": before, "after": after}
 
 
 if __name__ == "__main__":

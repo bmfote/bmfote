@@ -92,6 +92,45 @@ function resolveClaudeBin() {
   catch { return "claude"; }
 }
 
+// ---------- folder registry ----------
+// Local map of workspace slug → cwd, so the picker can launch in the right
+// folder even for workspaces that only exist locally (haven't synced yet) or
+// that no longer have a cwd baked into the remote history.
+
+const FOLDER_REGISTRY = path.join(os.homedir(), ".claude", "cctx-folders.json");
+
+function readRegistry() {
+  try {
+    if (!fs.existsSync(FOLDER_REGISTRY)) return {};
+    return JSON.parse(fs.readFileSync(FOLDER_REGISTRY, "utf-8")) || {};
+  } catch { return {}; }
+}
+
+function writeRegistry(reg) {
+  fs.mkdirSync(path.dirname(FOLDER_REGISTRY), { recursive: true });
+  fs.writeFileSync(FOLDER_REGISTRY, JSON.stringify(reg, null, 2) + "\n");
+}
+
+function prompt(question) {
+  return new Promise((resolve) => {
+    process.stdout.write(question);
+    const stdin = process.stdin;
+    let buf = "";
+    stdin.resume();
+    stdin.setEncoding("utf-8");
+    const onData = (chunk) => {
+      buf += chunk;
+      const nl = buf.indexOf("\n");
+      if (nl !== -1) {
+        stdin.off("data", onData);
+        stdin.pause();
+        resolve(buf.slice(0, nl).trim());
+      }
+    };
+    stdin.on("data", onData);
+  });
+}
+
 // ---------- commands ----------
 
 async function cmdSetup(rest) {
@@ -268,6 +307,149 @@ async function cmdLaunch(rest) {
   process.exit(1);
 }
 
+// ---------- start (folder picker) ----------
+
+function pickFolder(items) {
+  return new Promise((resolve) => {
+    const stdin = process.stdin;
+    const stdout = process.stdout;
+    let idx = 0;
+
+    const render = () => {
+      const width = stdout.columns || 80;
+      const lines = [
+        "\x1b[1mcctx\x1b[0m — Select a workspace",
+        "\x1b[2m↑↓ navigate  ↵ launch  q quit\x1b[0m",
+        "",
+      ];
+      for (let i = 0; i < items.length; i++) {
+        const b = items[i];
+        const date = (b.last_active || "").slice(0, 10) || "—";
+        const label = b.label || b.workspace_id || "(unnamed)";
+        const name = label.length > width - 16 ? label.slice(0, width - 17) + "…" : label;
+        const pad = " ".repeat(Math.max(1, width - 4 - name.length - date.length));
+        if (i === idx) lines.push(`\x1b[7m> ${name}${pad}${date}\x1b[0m`);
+        else lines.push(`  ${name}${pad}\x1b[2m${date}\x1b[0m`);
+      }
+      stdout.write("\x1b[2J\x1b[H" + lines.join("\n") + "\n");
+    };
+
+    const cleanup = () => {
+      stdin.removeListener("data", onData);
+      if (stdin.isTTY) stdin.setRawMode(false);
+      stdin.pause();
+      stdout.write("\x1b[?25h");
+    };
+
+    const onData = (buf) => {
+      const s = buf.toString();
+      if (s === "\x03" || s === "q") { cleanup(); stdout.write("\n"); resolve(null); return; }
+      if (s === "\x1b[A" || s === "k") { idx = (idx - 1 + items.length) % items.length; render(); return; }
+      if (s === "\x1b[B" || s === "j") { idx = (idx + 1) % items.length; render(); return; }
+      if (s === "\r" || s === "\n") { cleanup(); resolve(items[idx]); return; }
+    };
+
+    stdout.write("\x1b[?25l");
+    stdin.setRawMode(true);
+    stdin.resume();
+    stdin.on("data", onData);
+    render();
+  });
+}
+
+async function cmdStart(rest) {
+  // Fetch server-side workspaces (populated by sync + remember)
+  let remote = [];
+  try { remote = (await api.get("/api/workspaces?limit=50")) || []; } catch {}
+
+  const registry = readRegistry();
+
+  // Merge: remote workspaces + registry-only workspaces
+  const byId = {};
+  for (const w of remote) {
+    byId[w.workspace_id] = {
+      workspace_id: w.workspace_id,
+      label: w.workspace_id,
+      last_active: w.last_active,
+      cwd: (registry[w.workspace_id] || {}).cwd,
+      message_count: w.message_count,
+    };
+  }
+  for (const [slug, entry] of Object.entries(registry)) {
+    if (!byId[slug]) {
+      byId[slug] = {
+        workspace_id: slug,
+        label: slug + " (local)",
+        last_active: entry.created_at || "",
+        cwd: entry.cwd,
+      };
+    }
+  }
+
+  const items = Object.values(byId).sort((a, b) => (b.last_active || "").localeCompare(a.last_active || ""));
+  items.push({ workspace_id: "__new__", label: "+ new folder…", last_active: "" });
+
+  if (!process.stdin.isTTY || !process.stdout.isTTY) {
+    console.error("cctx start requires a TTY.");
+    process.exit(1);
+  }
+
+  const picked = await pickFolder(items);
+  if (!picked) return;
+
+  let slug = picked.workspace_id;
+  let cwd = picked.cwd || process.cwd();
+
+  if (slug === "__new__") {
+    const newSlug = (await prompt("Slug (e.g. my-project): ")).trim();
+    if (!newSlug) {
+      console.error("No slug — aborting.");
+      process.exit(1);
+    }
+    const newCwd = (await prompt(`Path [${process.cwd()}]: `)).trim() || process.cwd();
+    if (!fs.existsSync(newCwd) || !fs.statSync(newCwd).isDirectory()) {
+      console.error(`Not a directory: ${newCwd}`);
+      process.exit(1);
+    }
+    registry[newSlug] = { cwd: newCwd, created_at: new Date().toISOString() };
+    writeRegistry(registry);
+    slug = newSlug;
+    cwd = newCwd;
+  } else if (!cwd) {
+    // Known workspace with no registered cwd — launch from current dir but warn.
+    cwd = process.cwd();
+  }
+
+  const claudeBin = resolveClaudeBin();
+  const child = spawn(claudeBin, [], {
+    stdio: "inherit",
+    cwd,
+    env: { ...process.env, CCTX_WORKSPACE: slug },
+  });
+  child.on("exit", (code) => process.exit(code || 0));
+}
+
+// ---------- rename ----------
+
+async function cmdRename(rest) {
+  const [oldId, newId] = rest;
+  if (!oldId || !newId) {
+    console.error("Usage: cctx rename <old_slug> <new_slug>");
+    process.exit(1);
+  }
+  const res = await api.post("/api/workspaces/rename", { old_id: oldId, new_id: newId });
+
+  // Also update the local folder registry
+  const reg = readRegistry();
+  if (reg[oldId]) {
+    reg[newId] = reg[oldId];
+    delete reg[oldId];
+    writeRegistry(reg);
+  }
+
+  console.log(`✓ ${oldId} → ${newId}  (${res.messages_updated ?? "?"} messages, ${res.sessions_updated ?? "?"} sessions)`);
+}
+
 // ---------- help ----------
 
 function showHelp() {
@@ -278,8 +460,10 @@ One SQLite file across every AI surface. Hooks auto-capture. FTS in <100ms.
 Commands:
   cctx setup --url <API_URL> --token <API_TOKEN>   Wire up this machine
   cctx status                                      Connection + stats
+  cctx start                                       Arrow-key picker over workspaces (folders)
+  cctx rename <old> <new>                          Rename a workspace (rewrites all rows)
   cctx search "query"                              FTS over all messages
-  cctx launch                                      Arrow-key picker over bookmarks
+  cctx launch                                      Arrow-key picker over bookmarks (specific threads)
   cctx launch <name>                               Resume bookmarked session by name
   cctx launch --save "name" [session_id]           Bookmark a session
   cctx launch --list                               List bookmarks (tab-delimited; pipe to fzf)
@@ -302,6 +486,8 @@ Backend: https://github.com/bmfote/bmfote#host-your-own-server
       case "status": return await cmdStatus();
       case "search": return await cmdSearch(args.slice(1));
       case "launch": return await cmdLaunch(args.slice(1));
+      case "start":  return await cmdStart(args.slice(1));
+      case "rename": return await cmdRename(args.slice(1));
       default:
         console.error(`Unknown command: ${command}`);
         console.error('Run "cctx --help" for usage.');
