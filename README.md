@@ -1,9 +1,9 @@
 # cctx
 
-<h4 align="center"><b>Your AI tools forget everything between sessions.</b> The average team loses 2,500 hours/year re-explaining context that should persist. cctx fixes this — one SQLite file across Claude Code, Cursor, the Messages API, and Managed Agents. Hooks auto-capture. FTS retrieves in &lt;100ms.</h4>
+<h4 align="center"><b>Cloud context for AI agents.</b> Like Dropbox moved files to the cloud, cctx moves AI context to the cloud. One SQLite file across Claude Code, Cursor, the Messages API, and Anthropic Managed Agents. Hooks auto-capture. FTS retrieves in &lt;100ms.</h4>
 
 <p align="center">
-  <a href="LICENSE"><img src="https://img.shields.io/badge/License-AGPL%203.0-blue.svg" alt="License"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-blue.svg" alt="License"></a>
   <a href="package.json"><img src="https://img.shields.io/badge/version-0.11.7-green.svg" alt="Version"></a>
   <img src="https://img.shields.io/badge/python-%E2%89%A53.12-brightgreen.svg" alt="Python">
   <img src="https://img.shields.io/badge/node-%E2%89%A518-brightgreen.svg" alt="Node">
@@ -11,15 +11,86 @@
 </p>
 
 <p align="center">
-  <a href="#the-problem-context-rot">Problem</a> •
-  <a href="#vs-anthropic-managed-agents-memory-stores">vs Managed Agents</a> •
+  <a href="#the-enemy-context-rot">Problem</a> •
+  <a href="#the-fix-cloud-context-one-file">Fix</a> •
+  <a href="#vs-every-other-memory-option">Counter-positions</a> •
   <a href="#install">Install</a> •
-  <a href="#key-features">Features</a> •
-  <a href="#proof-one-memory-multiple-agent-identities">Proof</a> •
   <a href="#use-from-any-agent-sdk">Agent SDKs</a> •
-  <a href="#for-teams--the-shape-of-whats-next">Teams</a> •
+  <a href="#for-teams">Teams</a> •
   <a href="#host-your-own-server">Self-Host</a>
 </p>
+
+---
+
+## Three irreducible claims
+
+- **A SQLite file you own** — not a managed black box. `cp` to back up, `grep` to inspect, delete a row to forget.
+- **Hooks auto-capture** — every Claude Code turn, every Messages API call, every Managed Agents run writes to the same store. No paste, no prompt rituals.
+- **FTS retrieves in <100ms** — BM25 ranking over standard SQLite FTS5. No vector DB, no embedding pipeline, no re-index step, no orchestration.
+
+---
+
+## The enemy: context rot
+
+Every AI tool you run lives in its own context silo — Claude Code on your laptop, Cursor in its app, Messages API scripts in CI, Managed Agents in Anthropic's cloud. None share memory. The result is **context rot**: your AI tools get *worse* the more you use them because stale context accumulates faster than you can invalidate it.
+
+### Three failure modes
+
+| Failure mode | What happens | Annual cost (25-person team) |
+|---|---|---:|
+| **Context archaeology** | You spend 3 min/request telling AI what to ignore before telling it what to do | $125,000 |
+| **Stale data in outputs** | AI-generated proposals cite deprecated features; an enterprise prospect tests a claim, finds it wrong, and a $180K deal stalls | $81,000 |
+| **Cross-contamination** | Customer A's API keys appear in Customer B's troubleshooting response | $31,000 |
+| | **Total** | **$237,000** |
+
+### Why the obvious fixes fail
+
+- **Bigger context windows** make it worse. [@dbreunig](https://x.com/dbreunig) measured "SIGNIFICANT decrease in performance at tokens > 20%" of Opus 4.6's 1M window. More tokens = more stale data drowning current context. Uncle Bob: *"one of the problems with a big context window is that it remembers too much."*
+- **Managed memory** is a black box. You can't inspect what it remembers, debug why it forgot, or fix a wrong memory.
+- **File-based memory** (`CLAUDE.md`) rots by accumulation. [@alxfazio](https://x.com/alxfazio): *"it's just updating the claude.md until it turns into a useless 6k line context rot."*
+- **Per-seat licenses** silo memory by user. One person's context is invisible to the team.
+
+Validated via 160 autoresearch experiments — 80 counter-positioning, 80 problem-definition — with 56 promoted at composite ≥8. Full evidence in [`docs/positioning.md`](docs/positioning.md) and [`docs/context-rot.md`](docs/context-rot.md).
+
+---
+
+## The fix: cloud context, one file
+
+cctx is **cloud context** — drop-in experiential memory across every AI tool and every device, stored in a SQLite file you own. Every Claude Code turn, every Messages API call, and every Managed Agents run reads from and writes to the same searchable store.
+
+Ask any agent on any surface *"what was the ICP we agreed on last Tuesday?"* and it finds the answer regardless of where the original conversation happened.
+
+### Four steps
+
+1. **Write** — a Claude Code `UserPromptSubmit` hook captures every turn; a `Stop` hook finalizes at session end. Non-Claude-Code agents use `cctx-client` or call `remember()` as an MCP tool.
+2. **Search** — FastAPI exposes BM25 full-text search over every message, tool call, and saved thread.
+3. **Recall** — five MCP tools (`search_memory`, `find_error`, `get_context`, `get_recent`, `remember`) auto-register in Claude Code and are reachable over HTTP by any MCP-speaking agent.
+4. **Bridge** — because recall is HTTP+MCP and writes are SDK-based, the same memory is reachable from every surface. No surface owns it.
+
+**Minimalism is the moat.** No vector DB, no framework, no orchestration engine. Every layer you remove makes the system harder to out-simple.
+
+---
+
+## vs. every other memory option
+
+cctx is the only option that bridges all four surfaces — Claude Code, Cursor, Messages API, Managed Agents — into one file you own.
+
+| | cctx | memory_stores | Mem0 | `CLAUDE.md` | ChatGPT/Copilot per-seat | LangGraph memory |
+|---|---|---|---|---|---|---|
+| Auto-invoked during session | ✅ hooks | ✅ | ⚠️ framework | ❌ manual | ✅ per-seat | ⚠️ graph-state |
+| Claude Code history | ✅ | ❌ | ❌ | — | ❌ | ❌ |
+| Cursor / Windsurf | ✅ MCP | ❌ | ❌ | — | ❌ | ❌ |
+| Messages API agents | ✅ client | ❌ | ⚠️ | ❌ | ❌ | ⚠️ |
+| Managed Agents | ✅ `cctx-agent` | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Bridge across all four | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ |
+| Your data, your infra | ✅ | ❌ | ⚠️ hosted | ✅ | ❌ | ⚠️ |
+| No vector DB / embedding pipeline | ✅ FTS5 | ✅ | ❌ | ✅ | ❌ | ❌ |
+| Inspect with `grep`, back up with `cp` | ✅ | ❌ | ❌ | ✅ | ❌ | ❌ |
+| Team-shared architecture (`workspace_id`) | ✅ | ❌ | ⚠️ | ❌ | ❌ | ❌ |
+
+**Use memory_stores** if all your agents live inside `/v1/sessions` and you want Anthropic to handle versioning and redact.
+
+**Use cctx** if you want one memory across every surface, in a SQLite file you own, survivable if you leave any one vendor.
 
 ---
 
@@ -31,100 +102,44 @@ If you already have a cctx server running, one command wires up Claude Code:
 npx cctx setup --url https://your-cctx-server --token <API_TOKEN>
 ```
 
-Restart Claude Code. Memory is now auto-captured and auto-recalled across sessions. No server yet? → [Host your own](#host-your-own-server) (~5 minutes).
+Restart Claude Code. Memory is auto-captured and auto-recalled across sessions. No server yet? → [Host your own](#host-your-own-server) (~5 minutes).
 
----
-
-## The problem: context rot
-
-Every AI tool you run lives in its own context silo. Claude Code on your laptop, Cursor in its app, your Messages API scripts, Managed Agents in Anthropic's cloud — none of them share memory. The result is **context rot**: your AI tools give worse answers the more you use them.
-
-### What context rot costs
-
-| Failure mode | What happens | Annual cost |
-|---|---|---:|
-| **Context archaeology** | You spend 3 min/request telling AI what to ignore before telling it what to do | $125,000 |
-| **Stale data in outputs** | AI-generated proposals cite deprecated features; a $180K deal stalls | $81,000 |
-| **Team context silos** | 4 people on the same deal, 4 separate AI sessions, zero shared context | $31,000 |
-| | **Total (25-person team)** | **$237,000** |
-
-Bigger context windows don't help — @dbreunig measured performance degrading "INSANELY" past 20% of Opus 4.6's 1M window. Managed memory doesn't help — it's a black box you can't inspect, grep, or fix. File-based memory (CLAUDE.md) rots by accumulation.
-
-**cctx is cloud context — one shared memory across all of them, in a SQLite file you own.** Every Claude Code turn, every Messages API call, and every Managed Agents run reads from and writes to the same searchable store. Ask any agent on any surface *"what was the ICP we agreed on last Tuesday?"* and it finds the answer no matter where the original conversation happened.
-
----
-
-## vs. Anthropic Managed Agents memory stores
-
-Anthropic shipped built-in memory stores for Managed Agents in April 2026. They're good — auto-invoked, with versioning, redact, and a console UI cctx doesn't have. But they only connect one silo (Managed Agents) to itself. cctx is the bridge across all four.
-
-| | Managed Agents memory stores | cctx |
-|---|---|---|
-| Auto-invoked during a session | ✅ | ✅ (Claude Code hooks) |
-| Versioning, redact, console UI | ✅ | ❌ |
-| Claude Code history | ❌ | ✅ |
-| Cursor / Windsurf history | ❌ | ✅ (via MCP) |
-| Messages API agents | ❌ | ✅ (`cctx-client`) |
-| Managed Agents sessions | ✅ | ✅ (`cctx-agent` CLI) |
-| Bridge between all four surfaces | ❌ | ✅ |
-| Your data, your infra | ❌ | ✅ |
-| Multi-user / team-shared (architecture) | ❌ | ✅ (`workspace_id`; UI coming) |
-
-**Use Managed Agents memory stores** if your agents live entirely inside `/v1/sessions` and you want Anthropic to manage versioning and redact for you.
-
-**Use cctx** if you want cloud context across every surface, in a SQLite file you own, survivable if you leave any one vendor. memory_stores is a managed black box — you can't back it up with `cp`, grep it when retrieval fails, or inspect the file.
-
----
-
-## Key Features
-
-- 🌉 **Cloud context, one file** — a SQLite file you own. Hooks auto-capture every turn from Claude Code; MCP serves the same memory to Cursor, the Messages API, the Agent SDK, and Managed Agents. No vector DB, no framework, no orchestration.
-- 🪝 **Zero-glue for Claude Code** — a `UserPromptSubmit` hook auto-records every turn and a `Stop` hook finalizes each session; MCP recall tools are registered automatically so the agent can pull memory on any turn without ceremony.
-- 🐍 **Any Python agent, same surface** — `pip install cctx-client` gives Messages API and Agent SDK agents the same recall + write loop Claude Code gets for free.
-- 🧠 **Agent-initiated writes** — agents call `remember()` to persist what matters, not just passively recall.
-- 🔒 **Your Turso, your token, your data** — self-hosted, bring-your-own-bearer. AGPL server (no closed-SaaS re-hosts) + MIT client (drop into any agent codebase, proprietary or not).
-
-Five MCP tools ship out of the box: `search_memory`, `find_error`, `get_context`, `get_recent`, `remember`. Retrieval is SQLite FTS5 with BM25 ranking — <100ms. No vector DB, no embedding pipeline, no re-index step.
-
----
-
-## How It Works — cloud context in four steps
-
-1. **Write** — every Claude Code turn is captured by a `UserPromptSubmit` hook (with a `Stop` hook finalizing the last turn on session end) and streamed to a Turso database. Non-Claude-Code agents do the same via `cctx-client`, or by calling `remember()` mid-turn as an MCP tool.
-2. **Search** — a FastAPI server exposes BM25 full-text search over every message, session, and tool call you've ever had with any agent.
-3. **Recall** — five MCP tools are auto-registered in Claude Code and reachable over HTTP by any MCP-speaking agent (Cursor, Managed Agents, custom Agent SDK apps).
-4. **Bridge** — because recall is HTTP + MCP and writes are SDK-based, the same memory is reachable from every surface an agent can run on. No surface owns it.
-
-See [`CLAUDE.md`](CLAUDE.md) for architecture details — schema, FTS5 triggers, embedded-replica vs direct-Turso modes.
-
----
-
-## Proof: one memory, multiple agent identities
-
-A live three-run reproduction — **one shared store, two different agent identities, zero SDK glue** — using n8n as the orchestration layer, Anthropic Managed Agents as the runtime, and cctx as the substrate.
-
-**Short version:** A brand-new Agent B with zero prior sessions correctly surfaced the work of a different Agent A via 15 MCP calls against cctx, reconstructed a full history it had never seen, and even flagged garbage rows from an earlier debug session as "known artifacts."
-
-Full reproduction — ten-node n8n workflow, exact request headers, the three-run table, and prerequisites — is in [`docs/n8n-proof.md`](docs/n8n-proof.md). Captured in commit [`438d91b`](https://github.com/bmfote/bmfote/commit/438d91b).
-
-**The substrate is the store, not the agent** — memory is portable across agent identities, not tied to any one of them.
-
----
-
-## What the installer does
-
+**What the installer does:**
 - Registers an MCP server (`cctx-memory`) that exposes 5 memory tools to Claude Code
 - Installs hooks at `~/.claude/hooks/cctx-*.sh` for automatic session sync
 - Writes `~/.claude/cctx.env` with the URL and token
 - Merges hook entries into `~/.claude/settings.json`
 
-**Prerequisites:** [Claude Code](https://claude.com/claude-code) installed on this machine, and a running cctx server. Don't have a server? See [Host your own](#host-your-own-server) — ~5 minutes. Safe to re-run; run once per machine.
+**CLI surface** after install:
+
+```bash
+cctx status                         # connection + stats
+cctx search "ICP we agreed on"      # BM25 search over all messages
+cctx launch                         # interactive saved-thread picker
+cctx launch --save "acme-deal"      # bookmark current session
+cctx docs ingest <url|file> [tags]  # index reference docs alongside memory
+cctx docs search "rate limit"       # FTS over ingested docs
+```
+
+Safe to re-run; run once per machine.
+
+---
+
+## Proof: one memory, multiple agent identities
+
+A live three-run reproduction — **one shared store, two different agent identities, zero SDK glue** — using n8n as orchestration, Anthropic Managed Agents as runtime, and cctx as the substrate.
+
+**Short version:** A brand-new Agent B with zero prior sessions correctly surfaced the work of a different Agent A via 15 MCP calls against cctx, reconstructed a full history it had never seen, and flagged garbage rows from an earlier debug session as "known artifacts."
+
+Full reproduction in [`docs/n8n-proof.md`](docs/n8n-proof.md), commit [`438d91b`](https://github.com/bmfote/bmfote/commit/438d91b).
+
+**The substrate is the store, not the agent** — memory is portable across agent identities, not tied to any one of them.
 
 ---
 
 ## Use from any agent SDK
 
-cctx isn't Claude-Code-only. If your agent runs on the Messages API, the Claude Agent SDK, or Anthropic Managed Agents, install the Python client and you get the same recall + write surface with no code specific to Claude Code.
+cctx isn't Claude-Code-only. If your agent runs on the Messages API, the Claude Agent SDK, or Anthropic Managed Agents, install the Python client and get the same recall + write surface with no Claude-Code-specific code.
 
 ```bash
 pip install -e ./client
@@ -134,15 +149,15 @@ export CCTX_TOKEN=...
 
 ### Anthropic Managed Agents — the hardest silo to bridge
 
-Managed Agents don't expose client-side hooks, so the integration flips: the agent itself calls `remember` and `search_memory` as MCP tools against cctx. cctx ships a `cctx-agent` CLI that handles the whole wiring — vault + credential, environment with `allowed_hosts`, agent config with `mcp_servers` + `mcp_toolset` + `always_allow` — in one command.
+Managed Agents don't expose client-side hooks, so the integration flips: the agent itself calls `remember` and `search_memory` as MCP tools against cctx. cctx ships a `cctx-agent` CLI that wires the whole thing — vault + credential, environment with `allowed_hosts`, agent config with `mcp_servers` + `mcp_toolset` + `always_allow` — in one command.
 
 ```bash
-# Create a memory-only agent wired to cctx (idempotent — reruns are no-ops)
+# Create a memory-backed agent wired to cctx (idempotent)
 cctx-agent create \
   --name "my agent" \
   --system "You are a memory retrieval agent backed by cctx."
 
-# Run it with a prompt; returns the final agent response
+# Run it
 cctx-agent run <agent_id> "What did we decide about Acme last week?"
 
 # Audit or retrofit an agent created elsewhere
@@ -150,13 +165,11 @@ cctx-agent doctor <agent_id> --fix
 cctx-agent list
 ```
 
-The CLI reads `CCTX_URL`, `CCTX_TOKEN` (from `npx cctx setup`), and `ANTHROPIC_API_KEY` from your shell. Shared resources — a `cctx-default` vault and `cctx-default-env` environment — are discovered by name and created on first use, so there is no separate setup step.
+The CLI reads `CCTX_URL`, `CCTX_TOKEN` (from `npx cctx setup`), and `ANTHROPIC_API_KEY` from your shell. Shared resources (a `cctx-default` vault and `cctx-default-env` environment) are discovered by name and created on first use.
 
-All paths write into the same `messages` table as Claude Code sessions. See [`client/README.md`](client/README.md) for the full surface, failure semantics, and limitations.
+All paths write into the same `messages` table as Claude Code sessions. See [`client/README.md`](client/README.md).
 
 ### Claude Agent SDK — no glue code
-
-Plug the cctx MCP server into options for reads, register hooks for writes, done:
 
 ```python
 from claude_agent_sdk import ClaudeAgentOptions, query
@@ -176,11 +189,9 @@ async for msg in query(prompt="Continue yesterday's investigation", options=opti
     ...
 ```
 
-The agent gets `search_memory`, `find_error`, `get_context`, `get_recent`, and `remember` as tools automatically, and every user prompt + tool call is recorded back.
+The agent gets all five MCP tools automatically, and every user prompt + tool call is recorded back.
 
 ### Messages API — the full loop
-
-Day 1 and Day 2 of an agent that continues its own research:
 
 ```python
 import anthropic
@@ -189,25 +200,21 @@ from cctx_client import Client, record_exchange
 cctx = Client()
 session = cctx.session(project="research-agent")
 
-# 1. Recall prior memory
 prior = session.recall("competitor pricing research", limit=10)
 
-# 2. Run the turn with that context in the system prompt
 ac = anthropic.Anthropic()
-user = "Continue from where we left off."
 response = ac.messages.create(
     model="claude-sonnet-4-5",
     max_tokens=2048,
     system=f"You are a research agent.\n\n{prior}",
-    messages=[{"role": "user", "content": user}],
+    messages=[{"role": "user", "content": "Continue from where we left off."}],
 )
 
-# 3. Write the new turn back
-record_exchange(session, user, response)
+record_exchange(session, "Continue from where we left off.", response)
 session.close()
 ```
 
-Or let the agent choose when to recall by exposing cctx as **tools it can call mid-turn**:
+Or expose cctx as **tools the agent can call mid-turn**:
 
 ```python
 from cctx_client import TOOL_SPECS, handle_tool_use
@@ -218,29 +225,27 @@ response = ac.messages.create(
     tools=TOOL_SPECS,    # search_memory, find_error, get_context, get_recent, remember
     messages=[{"role": "user", "content": "What did we decide about Acme last week?"}],
 )
-# Handle any tool_use blocks with handle_tool_use(block, client=cctx)
 ```
 
 ---
 
-## For teams — the shape of what's next
+## For teams
 
-cctx is currently a single-user primitive with multi-user *architecture*. The `workspace_id` column landed recently; the surface area to use it has not. If you're running a Claude-centric team of 1–5 people who are comfortable with a self-hosted server, cctx is deployable today. Beyond that, the gaps below are the roadmap.
+cctx is a single-user primitive today with multi-user *architecture* in place. The `workspace_id` column isolates memory at the database level. If you're running a Claude-centric team of 1–5 people comfortable with a self-hosted server, cctx is deployable today.
 
 **Works today**
-- Multi-tenant row isolation at the database level (`workspace_id` on every message)
+- Multi-tenant row isolation (`workspace_id` on every message, tool use, saved thread, and doc)
 - Self-hosted deployment to any Docker host your team can reach
 - Shared bearer token across all team members
-- One store, N agents — different Claude Code machines, Managed Agents sessions, and Messages API scripts all see the same pool
+- One store, N agents — different Claude Code machines, Managed Agents, and Messages API scripts all see the same pool
 
 **Not shipped yet**
-- Team-invite flow / per-user bearer tokens with role-based access
+- Team-invite flow / per-user bearer tokens
 - Web dashboard for non-technical users
 - ChatGPT and Copilot adapters (Claude-speaking tools only today)
-- Author attribution beyond session metadata
 - Audit log / change history
 
-If any of the gaps above would block your team, [open an issue](https://github.com/bmfote/bmfote/issues) — the team direction is the explicit next phase and your use case will shape what ships first.
+If any of the gaps above would block your team, [open an issue](https://github.com/bmfote/bmfote/issues) — team direction is the explicit next phase.
 
 ---
 
@@ -258,15 +263,13 @@ brew install tursodatabase/tap/turso
 turso auth login
 ```
 
-(Non-macOS install instructions: https://docs.turso.tech/cli/installation)
+(Non-macOS: https://docs.turso.tech/cli/installation)
 
 ### Step 1 — Clone the repo
 
 ```bash
 git clone https://github.com/bmfote/bmfote && cd bmfote
 ```
-
-Keep this shell open. Every command below runs from inside this directory.
 
 ### Step 2 — Create a Turso database
 
@@ -276,35 +279,27 @@ turso db show cctx-memory --url              # -> libsql://...
 turso db tokens create cctx-memory --expiration none
 ```
 
-Save the URL and token. You'll pass them to the server as environment variables.
-
 ### Step 3 — Apply the schema and generate an API token
 
 ```bash
 turso db shell cctx-memory < engine/schema.sql
-openssl rand -hex 32    # save this — every client needs it
+openssl rand -hex 32    # save — every client needs it
 ```
 
-### Step 4 — Deploy the server
-
-The server is a single `Dockerfile`. Pick your provider.
-
-> **All commands below must be run from inside the cloned `cctx` directory** (same shell as Step 1). Your provider CLI needs to see the `Dockerfile`.
+### Step 4 — Deploy
 
 <details>
 <summary><strong>Railway</strong></summary>
 
 ```bash
 railway init
-railway service                                # link or create a service
+railway service
 railway variables --set TURSO_DATABASE_URL=libsql://...
 railway variables --set TURSO_AUTH_TOKEN=...
 railway variables --set API_TOKEN=...
 railway up
-railway domain                                 # your public URL
+railway domain
 ```
-
-Railway distinguishes **projects** from **services**. `railway init` creates a project but does not always link a service. If later commands complain `No service linked` or `No services found`, run `railway service` and pick or create one, then re-run the failing command.
 </details>
 
 <details>
@@ -352,13 +347,12 @@ curl -H "Authorization: Bearer $API_TOKEN" https://your-domain/api/stats
 
 ### Troubleshooting
 
-- **`railway up` says `Dockerfile not found` or `no build context`** — you're not inside the cloned `cctx` directory. `cd` into it and retry.
-- **`railway up` / `railway variables` says `No service linked` or `No services found`** — run `railway service`, pick or create a service, then re-run the failing command.
-- **`fly launch` offers to generate a Dockerfile** — decline. The repo already ships one; make sure you ran `fly launch` from inside `cctx/`.
-- **`turso db shell` errors on `engine/schema.sql: No such file`** — you're not in the repo root. `cd cctx` and retry.
-- **`curl /health` returns connection refused** — the container failed to start. Check provider logs; the most common cause is a missing `API_TOKEN`, which makes the server fail closed.
-- **`curl /api/stats` returns 401** — the `API_TOKEN` on the server does not match the token in your `Authorization: Bearer ...` header.
-- **`/api/stats` returns zeros or empty** — schema was not applied. Re-run `turso db shell cctx-memory < engine/schema.sql` from the repo root.
+- **`railway up` says `Dockerfile not found`** — you're not inside the cloned `cctx` directory.
+- **`No service linked`** — run `railway service`, pick or create, retry.
+- **`fly launch` offers to generate a Dockerfile** — decline; the repo ships one.
+- **`curl /health` connection refused** — provider logs; usually missing `API_TOKEN`.
+- **`curl /api/stats` returns 401** — token mismatch between server and client.
+- **`/api/stats` returns zeros** — schema wasn't applied; re-run `turso db shell ... < engine/schema.sql`.
 
 </details>
 
@@ -371,19 +365,14 @@ source .venv/bin/activate      # Python 3.12
 python -m engine.server        # starts on PORT from .env (default 8026)
 ```
 
-Local dev uses an embedded libSQL replica at `engine/local-replica.db` that syncs to your Turso database. Auth is optional locally (no `API_TOKEN` required).
+Local dev uses an embedded libSQL replica at `engine/local-replica.db` that syncs to your Turso database. Auth is optional locally.
 
 ---
 
 ## License
 
-cctx uses a split license:
-
-- **Server, hooks, installer, and CLI** — [GNU AGPL-3.0](LICENSE). If you modify cctx and run it as a network service, AGPL-3.0 requires you to make your modified source available to your users.
-- **Python client library** ([`client/`](client/)) — [MIT](client/LICENSE). Free to embed in proprietary agent code with no copyleft obligations.
-
-The server is AGPL so commercial re-hosters can't take cctx, add private features, and compete as a closed SaaS. The client is MIT so you can drop it into any agent codebase — proprietary or not — without license friction.
+cctx is [MIT](LICENSE) — server, hooks, installer, CLI, and the Python client library. Drop any piece into any codebase, proprietary or not.
 
 ---
 
-**Built with FastMCP** | **Powered by Turso (libSQL)** | **AGPL-3.0 + MIT (split)**
+**Built with FastMCP** | **Powered by Turso (libSQL)** | **MIT**

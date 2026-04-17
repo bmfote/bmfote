@@ -495,6 +495,71 @@ def create_session(request: Request, session: SessionCreate):
 
 
 # =============================================================
+# BOOKMARKS — name-a-session so you can resume it later
+# =============================================================
+# One nullable column on `sessions`; no separate table. Global uniqueness
+# across workspaces (partial index) because it's fine for a single-tenant
+# deploy and collapses cleanly when we add per-workspace bookmarks later.
+
+class BookmarkCreate(BaseModel):
+    name: str = Field(max_length=200)
+    session_id: str
+
+
+@app.get("/api/bookmarks")
+@limiter.limit("60/minute")
+def list_bookmarks(request: Request, limit: int = Query(default=100, le=500)):
+    conn = get_conn()
+    return rows_to_dicts(conn.execute(
+        """
+        SELECT s.bookmark_name AS name, s.session_id, s.project,
+               COALESCE(
+                 (SELECT MAX(timestamp) FROM messages
+                  WHERE session_id = s.session_id),
+                 s.last_message_at
+               ) AS last_active
+        FROM sessions s
+        WHERE s.bookmark_name IS NOT NULL
+        ORDER BY last_active DESC
+        LIMIT ?
+        """,
+        (limit,),
+    ))
+
+
+@app.post("/api/bookmarks")
+@limiter.limit("60/minute")
+def save_bookmark(request: Request, b: BookmarkCreate):
+    conn = get_conn()
+    conn.execute(
+        "UPDATE sessions SET bookmark_name = NULL WHERE bookmark_name = ?",
+        (b.name,),
+    )
+    conn.execute(
+        "UPDATE sessions SET bookmark_name = ? WHERE session_id = ?",
+        (b.name, b.session_id),
+    )
+    conn.commit()
+    if not is_remote_db():
+        conn.sync()
+    return {"status": "ok", "name": b.name}
+
+
+@app.delete("/api/bookmarks/{name}")
+@limiter.limit("60/minute")
+def delete_bookmark(request: Request, name: str):
+    conn = get_conn()
+    conn.execute(
+        "UPDATE sessions SET bookmark_name = NULL WHERE bookmark_name = ?",
+        (name,),
+    )
+    conn.commit()
+    if not is_remote_db():
+        conn.sync()
+    return {"status": "ok"}
+
+
+# =============================================================
 # SYNC ENDPOINT
 # =============================================================
 

@@ -48,10 +48,50 @@ if [ -n "$TRANSCRIPT_PATH" ] && [ -f "$TRANSCRIPT_PATH" ] && [ -n "$SESSION_ID" 
 fi
 
 # --- Compaction detection ---
+# Two detection paths: (1) JSONL summary record, which is how Claude Code
+# signals native /compact in the transcript; (2) legacy agent-acompact-*.jsonl
+# files from older releases. Count both so we catch compaction regardless of
+# which mechanism fired.
 COMPACTION_DIR="$HOME/.claude/projects"
-if [ -n "$SESSION_ID" ]; then
-  CURRENT_COUNT=$(find "$COMPACTION_DIR" -path "*/$SESSION_ID/subagents/agent-acompact-*.jsonl" 2>/dev/null | wc -l | tr -d ' ')
-  CURRENT_COUNT=${CURRENT_COUNT:-0}
+if [ -n "$SESSION_ID" ] && [ -n "$TRANSCRIPT_PATH" ] && [ -f "$TRANSCRIPT_PATH" ]; then
+  FILE_COUNT=$(find "$COMPACTION_DIR" -path "*/$SESSION_ID/subagents/agent-acompact-*.jsonl" 2>/dev/null | wc -l | tr -d ' ')
+  FILE_COUNT=${FILE_COUNT:-0}
+
+  JSONL_COUNT=$(python3 -c "
+import sys, json
+path = sys.argv[1]
+count = 0
+try:
+    with open(path) as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                r = json.loads(line)
+            except Exception:
+                continue
+            if r.get('type') != 'user':
+                continue
+            msg = r.get('message') or {}
+            body = msg.get('content')
+            hit = False
+            if isinstance(body, str) and 'This session is being continued from a previous conversation' in body:
+                hit = True
+            elif isinstance(body, list):
+                for block in body:
+                    if isinstance(block, dict) and block.get('type') == 'text' and 'This session is being continued from a previous conversation' in (block.get('text') or ''):
+                        hit = True
+                        break
+            if hit:
+                count += 1
+except Exception:
+    pass
+print(count)
+" "$TRANSCRIPT_PATH" 2>/dev/null || echo "0")
+  JSONL_COUNT=${JSONL_COUNT:-0}
+
+  CURRENT_COUNT=$((FILE_COUNT + JSONL_COUNT))
   MARKER_FILE="$MARKER_DIR/$SESSION_ID"
 
   PREV_COUNT=0

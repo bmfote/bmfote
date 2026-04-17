@@ -28,7 +28,7 @@
     "turso"
   ],
   "author": "cctx",
-  "license": "AGPL-3.0-only",
+  "license": "MIT",
   "repository": {
     "type": "git",
     "url": "https://github.com/bmfote/bmfote.git"
