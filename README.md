@@ -1,6 +1,6 @@
 # cctx
 
-<h4 align="center"><b>Cloud context for AI agents.</b> One SQLite file across Claude Code, Cursor, the Messages API, and Managed Agents. Hooks auto-capture. FTS retrieves in &lt;100ms. Like Dropbox moved files to the cloud, cctx moves AI context to the cloud.</h4>
+<h4 align="center"><b>Your AI tools forget everything between sessions.</b> The average team loses 2,500 hours/year re-explaining context that should persist. cctx fixes this — one SQLite file across Claude Code, Cursor, the Messages API, and Managed Agents. Hooks auto-capture. FTS retrieves in &lt;100ms.</h4>
 
 <p align="center">
   <a href="LICENSE"><img src="https://img.shields.io/badge/License-AGPL%203.0-blue.svg" alt="License"></a>
@@ -11,7 +11,7 @@
 </p>
 
 <p align="center">
-  <a href="#the-problem-your-ai-is-in-silos">Problem</a> •
+  <a href="#the-problem-context-rot">Problem</a> •
   <a href="#vs-anthropic-managed-agents-memory-stores">vs Managed Agents</a> •
   <a href="#install">Install</a> •
   <a href="#key-features">Features</a> •
@@ -35,16 +35,20 @@ Restart Claude Code. Memory is now auto-captured and auto-recalled across sessio
 
 ---
 
-## The problem: your AI is in silos
+## The problem: context rot
 
-Every AI tool you run lives in its own context.
+Every AI tool you run lives in its own context silo. Claude Code on your laptop, Cursor in its app, your Messages API scripts, Managed Agents in Anthropic's cloud — none of them share memory. The result is **context rot**: your AI tools give worse answers the more you use them.
 
-- **Claude Code** on your laptop has its own history in `~/.claude/`.
-- **Cursor / Windsurf** have their own local histories, inside the app.
-- A **Messages API** script you ran yesterday stored nothing, anywhere.
-- A **Managed Agents** session runs in Anthropic's cloud and has no idea any of the above exist.
+### What context rot costs
 
-None of them can see into the others. That's not a bug in Anthropic's design — it's a consequence of each product being built by a different team for a different job. The result: you tell every tool the same things every day, and nothing compounds.
+| Failure mode | What happens | Annual cost |
+|---|---|---:|
+| **Context archaeology** | You spend 3 min/request telling AI what to ignore before telling it what to do | $125,000 |
+| **Stale data in outputs** | AI-generated proposals cite deprecated features; a $180K deal stalls | $81,000 |
+| **Team context silos** | 4 people on the same deal, 4 separate AI sessions, zero shared context | $31,000 |
+| | **Total (25-person team)** | **$237,000** |
+
+Bigger context windows don't help — @dbreunig measured performance degrading "INSANELY" past 20% of Opus 4.6's 1M window. Managed memory doesn't help — it's a black box you can't inspect, grep, or fix. File-based memory (CLAUDE.md) rots by accumulation.
 
 **cctx is cloud context — one shared memory across all of them, in a SQLite file you own.** Every Claude Code turn, every Messages API call, and every Managed Agents run reads from and writes to the same searchable store. Ask any agent on any surface *"what was the ICP we agreed on last Tuesday?"* and it finds the answer no matter where the original conversation happened.
 

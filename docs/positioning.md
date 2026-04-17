@@ -1,8 +1,72 @@
-# cctx positioning — validated via autoresearch (Night 1, 80 experiments)
+# cctx positioning — validated via autoresearch (Nights 1 + 4, 160 experiments)
 
-All 80 experiments promoted, 38 scored perfect 10/10/10. This document captures
-the validated findings. Use it as the reference when writing about cctx — blog
-posts, pitch decks, outbound, landing pages.
+Night 1 (moat track): 80/80 promoted, 38 scored perfect 10/10/10.
+Night 4 (context-rot track): 56/80 promoted, avg score 8.58.
+
+This document captures the validated findings. Use it as the reference when
+writing about cctx — blog posts, pitch decks, outbound, landing pages.
+
+---
+
+## The Problem: Context Rot
+
+Context rot is when AI tools give worse answers the more you use them — stale
+data contaminates outputs, context from unrelated tasks bleeds across sessions,
+and users spend more time re-explaining what the AI should already know than
+getting actual work done.
+
+### Three failure modes
+
+1. **Context archaeology** — Users craft defensive prompts to route around stale
+   context. "Ignore last month's pricing, don't use the old messaging framework,
+   forget the previous project." The clarification takes longer than the task.
+   Cost: **$125K/year** for a 25-person team (3 min × 8 requests/day × 250 days).
+
+2. **Stale data in customer-facing work** — AI-generated proposals cite deprecated
+   features, sunset integrations, or superseded pricing. An enterprise prospect
+   tests a claim, discovers it's wrong, and a $180K deal stalls for 3 weeks.
+   Cost: **$81K/year** in rework + damaged deals.
+
+3. **Cross-contamination** — AI mixes context from unrelated customers, projects,
+   or accounts. Customer A's API keys appear in Customer B's troubleshooting
+   response. Not a feature gap — a data leak waiting to happen.
+   Cost: **$26K/year** per 5-person support team + unmeasured compliance risk.
+
+### Why the obvious fixes fail
+
+- **Bigger context windows** make it worse. @dbreunig measured "SIGNIFICANT
+  decrease in performance at tokens > 20% consumed on Opus 4.6." More tokens =
+  more stale data drowning current context.
+- **Managed memory (memory_stores)** is a black box. You can't inspect what it
+  remembers, debug why it forgot, or fix a wrong memory.
+- **File-based memory (CLAUDE.md)** rots by accumulation. @alxfazio: "it's just
+  updating the claude.md until it turns into a useless 6k line context rot."
+- **Per-seat licenses** silo memory by user. One person's context is invisible
+  to the team.
+
+### What context rot costs
+
+| Angle | Annual cost (25-person team) |
+|-------|---:|
+| Context archaeology (re-explanation overhead) | $125,000 |
+| Stale data in outputs (rework + deal damage) | $81,000 |
+| Team context silos (handoff rebuilds) | $31,000 |
+| **Total** | **$237,000** |
+
+### Evidence
+
+- Chroma Research: quantified unpredictable performance degradation at context thresholds
+- @dbreunig: "1M context doesn't matter" past 20% utilization
+- @unclebobmartin: "One of the problems with a big context window is that it remembers too much"
+- Spotify Engineering: "it tended to get lost when it filled up its context window"
+- Atlan: defines rot as "missing, stale, conflicting, or irrelevant context"
+
+See `docs/context-rot.md` for the full reference and `autoresearch/tracks/context-rot/target.jsonl`
+for all 56 promoted experiments.
+
+---
+
+## The Solution: Cloud Context
 
 ## Category
 
