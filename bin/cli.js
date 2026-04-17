@@ -133,8 +133,81 @@ async function cmdSearch(rest) {
   }
 }
 
+function pickBookmark(bookmarks) {
+  return new Promise((resolve) => {
+    const stdin = process.stdin;
+    const stdout = process.stdout;
+    let items = [...bookmarks];
+    let idx = 0;
+
+    const render = () => {
+      const width = stdout.columns || 80;
+      const lines = [
+        "\x1b[1mcctx\x1b[0m — Select a thread to resume",
+        "\x1b[2m↑↓ navigate  ↵ select  d delete  q quit\x1b[0m",
+        "",
+      ];
+      for (let i = 0; i < items.length; i++) {
+        const b = items[i];
+        const date = (b.last_active || "").slice(0, 10) || "—";
+        const name = b.name.length > width - 16 ? b.name.slice(0, width - 17) + "…" : b.name;
+        const pad = " ".repeat(Math.max(1, width - 4 - name.length - date.length));
+        if (i === idx) lines.push(`\x1b[7m> ${name}${pad}${date}\x1b[0m`);
+        else lines.push(`  ${name}${pad}\x1b[2m${date}\x1b[0m`);
+      }
+      stdout.write("\x1b[2J\x1b[H" + lines.join("\n") + "\n");
+    };
+
+    const cleanup = () => {
+      stdin.removeListener("data", onData);
+      if (stdin.isTTY) stdin.setRawMode(false);
+      stdin.pause();
+      stdout.write("\x1b[?25h");
+    };
+
+    const onData = async (buf) => {
+      const s = buf.toString();
+      if (s === "\x03" || s === "q") { cleanup(); stdout.write("\n"); resolve(null); return; }
+      if (s === "\x1b[A" || s === "k") { idx = (idx - 1 + items.length) % items.length; render(); return; }
+      if (s === "\x1b[B" || s === "j") { idx = (idx + 1) % items.length; render(); return; }
+      if (s === "\r" || s === "\n") { cleanup(); resolve(items[idx]); return; }
+      if (s === "d") {
+        const victim = items[idx];
+        if (!victim) return;
+        try { await api.del(`/api/bookmarks/${encodeURIComponent(victim.name)}`); } catch (e) {
+          cleanup(); stdout.write(`\nError: ${e.message}\n`); resolve(null); return;
+        }
+        items.splice(idx, 1);
+        if (idx >= items.length) idx = Math.max(0, items.length - 1);
+        if (!items.length) { cleanup(); stdout.write("\n(no bookmarks left)\n"); resolve(null); return; }
+        render();
+      }
+    };
+
+    stdout.write("\x1b[?25l");
+    stdin.setRawMode(true);
+    stdin.resume();
+    stdin.on("data", onData);
+    render();
+  });
+}
+
 async function cmdLaunch(rest) {
   const sub = rest[0];
+
+  if (!sub && process.stdin.isTTY && process.stdout.isTTY) {
+    const bookmarks = (await api.get("/api/bookmarks")) || [];
+    if (!bookmarks.length) {
+      console.log('(none) — save with: cctx launch --save "name"');
+      return;
+    }
+    const picked = await pickBookmark(bookmarks);
+    if (!picked) return;
+    const claudeBin = resolveClaudeBin();
+    const child = spawn(claudeBin, ["--resume", picked.session_id], { stdio: "inherit", env: process.env });
+    child.on("exit", (code) => process.exit(code || 0));
+    return;
+  }
 
   if (sub === "--save") {
     const name = rest[1];
@@ -206,7 +279,8 @@ Commands:
   cctx setup --url <API_URL> --token <API_TOKEN>   Wire up this machine
   cctx status                                      Connection + stats
   cctx search "query"                              FTS over all messages
-  cctx launch <name>                               Resume bookmarked session
+  cctx launch                                      Arrow-key picker over bookmarks
+  cctx launch <name>                               Resume bookmarked session by name
   cctx launch --save "name" [session_id]           Bookmark a session
   cctx launch --list                               List bookmarks (tab-delimited; pipe to fzf)
   cctx launch --remove "name"                      Delete a bookmark
