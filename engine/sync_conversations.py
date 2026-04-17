@@ -61,13 +61,54 @@ def parse_timestamp(ts: str) -> str:
 
 
 def derive_project(dirpath: str) -> str:
-    """Derive project name from the JSONL directory path."""
+    """Derive a clean project slug from the JSONL directory path.
+
+    Claude Code encodes the launch cwd as a hyphen-flattened path (e.g.
+    `-Users-mattbatterson-dev-github-projects-bmfote`). We want the slug to
+    match the folder name the user picked in `cctx start`:
+
+      ~/dev/github_projects/bmfote   → 'bmfote'
+      ~/dev/claude-vault             → 'claude-vault'
+      ~/                             → 'home'
+      ~/dev/github_projects          → 'github-projects'  (no subdir)
+      ~/railway-mcp                  → 'railway-mcp'
+
+    Strategy: walk left to right, prefer the LAST occurrence of 'projects'
+    (so `dev-github-projects-bmfote` keeps just `bmfote`). Fall back to
+    'home' for the bare home dir.
+    """
     dirname = os.path.basename(dirpath)
-    parts = dirname.split("-")
-    for i, part in enumerate(parts):
-        if part in ("projects", "dev") and i + 1 < len(parts):
-            return "-".join(parts[i + 1:])
-    return dirname
+    parts = [p for p in dirname.split("-") if p]
+    if not parts:
+        return "home"
+
+    # Bare home: just `-Users-<name>`
+    if len(parts) == 2 and parts[0] == "Users":
+        return "home"
+
+    # Find LAST 'projects'-marker segment. Matches the literal token
+    # 'projects' AND any token ending in 'projects' (e.g. 'github_projects'
+    # — historical underscore variant of the parent dir).
+    last_proj = -1
+    for i, p in enumerate(parts):
+        if p == "projects" or p.endswith("projects"):
+            last_proj = i
+    if last_proj != -1 and last_proj + 1 < len(parts):
+        return "-".join(parts[last_proj + 1:])
+    if last_proj != -1:
+        # `dev-github-projects` with no subdir
+        prev = parts[last_proj - 1] if last_proj > 0 else ""
+        return f"{prev}-projects" if prev not in ("dev", "") else "github-projects"
+
+    # No 'projects' segment — strip the leading Users-<name>(-dev?) prefix
+    # and use what remains.
+    skip = 0
+    if parts[0] == "Users":
+        skip = 2  # Users + username
+    if skip < len(parts) and parts[skip] == "dev":
+        skip += 1
+    tail = parts[skip:]
+    return "-".join(tail) if tail else "home"
 
 
 # =============================================================
@@ -125,8 +166,9 @@ def update():
                 conn.execute("""
                     INSERT OR IGNORE INTO messages
                     (uuid, session_id, parent_uuid, type, role, content,
-                     model, input_tokens, output_tokens, timestamp)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                     model, input_tokens, output_tokens, timestamp,
+                     workspace_id)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """, (
                     uuid, session_id,
                     record.get("parentUuid"),
@@ -137,6 +179,7 @@ def update():
                     usage.get("input_tokens"),
                     usage.get("output_tokens"),
                     timestamp,
+                    project,
                 ))
                 new_messages += 1
                 updated_sessions.add((session_id, project))

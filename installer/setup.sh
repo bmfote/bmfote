@@ -22,18 +22,24 @@ set -euo pipefail
 # --- Parse arguments (--url and --token are required) ---
 CCTX_URL=""
 CCTX_TOKEN=""
+CCTX_PROJECT_DIR=""
+PROJECT_DIR_SET=0
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --url)  CCTX_URL="$2"; shift 2 ;;
     --token) CCTX_TOKEN="$2"; shift 2 ;;
+    --projects-dir) CCTX_PROJECT_DIR="$2"; PROJECT_DIR_SET=1; shift 2 ;;
     setup) shift ;;  # allow "cloud-context setup" — just skip the word
     -h|--help)
-      echo "Usage: npx cloud-context setup --url <API_URL> --token <API_TOKEN>"
+      echo "Usage: npx cloud-context setup --url <API_URL> --token <API_TOKEN> [--projects-dir <path>]"
       echo ""
-      echo "Options (both required):"
-      echo "  --url <url>      Your cctx API URL (from 'npx cloud-context deploy')"
-      echo "  --token <token>  Your API token (from 'npx cloud-context deploy')"
+      echo "Options:"
+      echo "  --url <url>            Your cctx API URL (required)"
+      echo "  --token <token>        Your API token (required)"
+      echo "  --projects-dir <path>  Folder whose subdirectories are offered by 'cctx start'"
+      echo "                         (optional; defaults to ~/dev/github_projects if it exists,"
+      echo "                         otherwise 'cctx start' shows only your home folder)"
       exit 0
       ;;
     *) echo "Unknown option: $1"; exit 1 ;;
@@ -218,11 +224,30 @@ PYEOF
 # --- Step 6: Write config file ---
 echo "[6/6] Saving configuration..."
 
+# Resolve projects dir: explicit flag > existing default > skip (cctx start will fall back to $HOME)
+if [ "$PROJECT_DIR_SET" -eq 0 ]; then
+  if [ -d "$HOME/dev/github_projects" ]; then
+    CCTX_PROJECT_DIR="$HOME/dev/github_projects"
+    echo "  Detected projects dir: $CCTX_PROJECT_DIR"
+  fi
+fi
+
+# Expand ~ if the user passed one
+if [ -n "$CCTX_PROJECT_DIR" ]; then
+  CCTX_PROJECT_DIR="${CCTX_PROJECT_DIR/#\~/$HOME}"
+  if [ ! -d "$CCTX_PROJECT_DIR" ]; then
+    echo "  Warning: --projects-dir '$CCTX_PROJECT_DIR' does not exist; saving anyway"
+  fi
+fi
+
 CONFIG_FILE="$HOME/.claude/cctx.env"
-cat > "$CONFIG_FILE" << EOF
-CCTX_URL=$CCTX_URL
-CCTX_TOKEN=$CCTX_TOKEN
-EOF
+{
+  echo "CCTX_URL=$CCTX_URL"
+  echo "CCTX_TOKEN=$CCTX_TOKEN"
+  if [ -n "$CCTX_PROJECT_DIR" ]; then
+    echo "CCTX_PROJECT_DIR=$CCTX_PROJECT_DIR"
+  fi
+} > "$CONFIG_FILE"
 chmod 600 "$CONFIG_FILE"
 echo "  Saved to $CONFIG_FILE"
 

@@ -642,12 +642,43 @@ def manual_sync(request: Request):
 # ADMIN — one-shot maintenance endpoints
 # =============================================================
 
+class BackfillReq(BaseModel):
+    from_slug: str = Field(default="cctx-default", max_length=200, alias="from")
+
+    class Config:
+        populate_by_name = True
+
+
+@app.post("/api/admin/backfill-preview")
+@limiter.limit("10/minute")
+def backfill_preview(request: Request, r: BackfillReq | None = None):
+    """Read-only: show how messages currently tagged `from` would split if
+    backfilled to sessions.project. No writes."""
+    src = (r.from_slug if r else "cctx-default") or "cctx-default"
+    conn = get_conn()
+    rows = rows_to_dicts(conn.execute(
+        """
+        SELECT COALESCE(NULLIF(s.project, ''), '(no project)') AS target,
+               COUNT(*) AS n
+          FROM messages m
+          LEFT JOIN sessions s ON s.session_id = m.session_id
+         WHERE m.workspace_id = ?
+         GROUP BY target
+         ORDER BY n DESC
+        """,
+        (src,),
+    ))
+    total = sum(r["n"] for r in rows)
+    return {"from": src, "total": total, "split": rows}
+
+
 @app.post("/api/admin/backfill-workspace")
 @limiter.limit("2/minute")
-def backfill_workspace(request: Request):
+def backfill_workspace(request: Request, r: BackfillReq | None = None):
     """Promote sessions.project to messages.workspace_id for rows still
-    tagged 'cctx-default'. Safe + idempotent; also returns before/after
-    distribution so the caller can eyeball the migration worked."""
+    tagged with `from` (default 'cctx-default'). Safe + idempotent; returns
+    before/after distribution so the caller can eyeball the migration."""
+    src = (r.from_slug if r else "cctx-default") or "cctx-default"
     conn = get_conn()
 
     before = rows_to_dicts(conn.execute(
@@ -659,16 +690,17 @@ def backfill_workspace(request: Request):
         UPDATE messages
            SET workspace_id = COALESCE(
              (SELECT s.project FROM sessions s WHERE s.session_id = messages.session_id),
-             'cctx-default'
+             ?
            )
-         WHERE workspace_id = 'cctx-default'
+         WHERE workspace_id = ?
            AND EXISTS (
              SELECT 1 FROM sessions s
               WHERE s.session_id = messages.session_id
                 AND s.project IS NOT NULL
                 AND s.project != ''
            )
-        """
+        """,
+        (src, src),
     )
     conn.commit()
     if not is_remote_db():
@@ -678,7 +710,7 @@ def backfill_workspace(request: Request):
         "SELECT workspace_id, COUNT(*) AS n FROM messages GROUP BY workspace_id ORDER BY n DESC"
     ))
 
-    return {"status": "ok", "before": before, "after": after}
+    return {"status": "ok", "from": src, "before": before, "after": after}
 
 
 if __name__ == "__main__":

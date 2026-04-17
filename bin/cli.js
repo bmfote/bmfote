@@ -11,19 +11,39 @@ const command = args[0];
 
 // ---------- config ----------
 
+const CONFIG_FILE = path.join(os.homedir(), ".claude", "cctx.env");
+
 function loadConfig() {
   const envUrl = process.env.CCTX_URL;
   const envToken = process.env.CCTX_TOKEN;
-  if (envUrl && envToken) return { url: envUrl.replace(/\/$/, ""), token: envToken };
+  const envProjectDir = process.env.CCTX_PROJECT_DIR;
 
-  const cfgFile = path.join(os.homedir(), ".claude", "cctx.env");
-  if (fs.existsSync(cfgFile)) {
-    const text = fs.readFileSync(cfgFile, "utf-8");
-    const url = (text.match(/^CCTX_URL=(.*)$/m) || [])[1];
-    const token = (text.match(/^CCTX_TOKEN=(.*)$/m) || [])[1];
-    if (url && token) return { url: url.replace(/\/$/, ""), token };
+  let url, token, projectDir;
+  if (fs.existsSync(CONFIG_FILE)) {
+    const text = fs.readFileSync(CONFIG_FILE, "utf-8");
+    url = (text.match(/^CCTX_URL=(.*)$/m) || [])[1];
+    token = (text.match(/^CCTX_TOKEN=(.*)$/m) || [])[1];
+    projectDir = (text.match(/^CCTX_PROJECT_DIR=(.*)$/m) || [])[1];
   }
-  return null;
+
+  url = envUrl || url;
+  token = envToken || token;
+  projectDir = envProjectDir || projectDir;
+
+  if (!url || !token) return null;
+  return { url: url.replace(/\/$/, ""), token, projectDir: projectDir || null };
+}
+
+function setConfigKey(key, value) {
+  let lines = [];
+  if (fs.existsSync(CONFIG_FILE)) {
+    lines = fs.readFileSync(CONFIG_FILE, "utf-8").split("\n").filter(Boolean);
+  }
+  const re = new RegExp(`^${key}=`);
+  const filtered = lines.filter((l) => !re.test(l));
+  filtered.push(`${key}=${value}`);
+  fs.mkdirSync(path.dirname(CONFIG_FILE), { recursive: true });
+  fs.writeFileSync(CONFIG_FILE, filtered.join("\n") + "\n", { mode: 0o600 });
 }
 
 function requireConfig() {
@@ -324,12 +344,12 @@ function pickFolder(items) {
       ];
       for (let i = 0; i < items.length; i++) {
         const b = items[i];
-        const date = (b.last_active || "").slice(0, 10) || "—";
+        const meta = (b.last_active || "").slice(0, 10) || (b.workspace_id && b.workspace_id !== b.label ? b.workspace_id : "");
         const label = b.label || b.workspace_id || "(unnamed)";
         const name = label.length > width - 16 ? label.slice(0, width - 17) + "…" : label;
-        const pad = " ".repeat(Math.max(1, width - 4 - name.length - date.length));
-        if (i === idx) lines.push(`\x1b[7m> ${name}${pad}${date}\x1b[0m`);
-        else lines.push(`  ${name}${pad}\x1b[2m${date}\x1b[0m`);
+        const pad = " ".repeat(Math.max(1, width - 4 - name.length - meta.length));
+        if (i === idx) lines.push(`\x1b[7m> ${name}${pad}${meta}\x1b[0m`);
+        else lines.push(`  ${name}${pad}\x1b[2m${meta}\x1b[0m`);
       }
       stdout.write("\x1b[2J\x1b[H" + lines.join("\n") + "\n");
     };
@@ -357,48 +377,75 @@ function pickFolder(items) {
   });
 }
 
+function listProjectFolders(projectDir) {
+  if (!projectDir || !fs.existsSync(projectDir)) return [];
+  try {
+    return fs.readdirSync(projectDir, { withFileTypes: true })
+      .filter((e) => e.isDirectory() && !e.name.startsWith("."))
+      .map((e) => e.name)
+      .sort();
+  } catch { return []; }
+}
+
+async function resolveProjectDir() {
+  const cfg = loadConfig();
+  if (cfg && cfg.projectDir) return cfg.projectDir;
+
+  // First-run prompt: offer the conventional default if it exists.
+  const guess = path.join(os.homedir(), "dev", "github_projects");
+  const defaultPath = fs.existsSync(guess) ? guess : "";
+  const promptText = defaultPath
+    ? `Projects directory [${defaultPath}] (blank to skip): `
+    : "Projects directory (blank to skip): ";
+
+  const answer = (await prompt(promptText)).trim();
+  const chosen = answer || defaultPath;
+  if (!chosen) return null; // user opted out — fall back to home only
+
+  if (!fs.existsSync(chosen) || !fs.statSync(chosen).isDirectory()) {
+    console.error(`Not a directory: ${chosen}`);
+    return null;
+  }
+  setConfigKey("CCTX_PROJECT_DIR", chosen);
+  console.log(`Saved CCTX_PROJECT_DIR=${chosen} to ${CONFIG_FILE}`);
+  return chosen;
+}
+
 async function cmdStart(rest) {
-  // Fetch server-side workspaces (populated by sync + remember)
-  let remote = [];
-  try { remote = (await api.get("/api/workspaces?limit=50")) || []; } catch {}
-
-  const registry = readRegistry();
-
-  // Merge: remote workspaces + registry-only workspaces
-  const byId = {};
-  for (const w of remote) {
-    byId[w.workspace_id] = {
-      workspace_id: w.workspace_id,
-      label: w.workspace_id,
-      last_active: w.last_active,
-      cwd: (registry[w.workspace_id] || {}).cwd,
-      message_count: w.message_count,
-    };
-  }
-  for (const [slug, entry] of Object.entries(registry)) {
-    if (!byId[slug]) {
-      byId[slug] = {
-        workspace_id: slug,
-        label: slug + " (local)",
-        last_active: entry.created_at || "",
-        cwd: entry.cwd,
-      };
-    }
-  }
-
-  const items = Object.values(byId).sort((a, b) => (b.last_active || "").localeCompare(a.last_active || ""));
-  items.push({ workspace_id: "__new__", label: "+ new folder…", last_active: "" });
-
   if (!process.stdin.isTTY || !process.stdout.isTTY) {
     console.error("cctx start requires a TTY.");
     process.exit(1);
   }
 
+  const projectDir = await resolveProjectDir();
+  const registry = readRegistry();
+
+  // Build items: home (always) + folders under projectDir + any registry-only
+  // entries that don't shadow a folder. Folder name == workspace slug; the
+  // registry can override the cwd for a given slug.
+  const items = [
+    { workspace_id: "home", label: "home", cwd: os.homedir() },
+  ];
+
+  const seen = new Set(["home"]);
+  for (const name of listProjectFolders(projectDir)) {
+    const slug = name;
+    const cwd = (registry[slug] && registry[slug].cwd) || path.join(projectDir, name);
+    items.push({ workspace_id: slug, label: name, cwd });
+    seen.add(slug);
+  }
+  for (const [slug, entry] of Object.entries(registry)) {
+    if (seen.has(slug)) continue;
+    items.push({ workspace_id: slug, label: `${slug} (custom)`, cwd: entry.cwd });
+  }
+
+  items.push({ workspace_id: "__new__", label: "+ new folder…", cwd: null });
+
   const picked = await pickFolder(items);
   if (!picked) return;
 
   let slug = picked.workspace_id;
-  let cwd = picked.cwd || process.cwd();
+  let cwd = picked.cwd;
 
   if (slug === "__new__") {
     const newSlug = (await prompt("Slug (e.g. my-project): ")).trim();
@@ -415,9 +462,11 @@ async function cmdStart(rest) {
     writeRegistry(registry);
     slug = newSlug;
     cwd = newCwd;
-  } else if (!cwd) {
-    // Known workspace with no registered cwd — launch from current dir but warn.
-    cwd = process.cwd();
+  }
+
+  if (!cwd || !fs.existsSync(cwd)) {
+    console.error(`Folder not found for "${slug}": ${cwd || "(none)"}`);
+    process.exit(1);
   }
 
   const claudeBin = resolveClaudeBin();
