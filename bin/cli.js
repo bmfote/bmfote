@@ -16,34 +16,15 @@ const CONFIG_FILE = path.join(os.homedir(), ".claude", "cctx.env");
 function loadConfig() {
   const envUrl = process.env.CCTX_URL;
   const envToken = process.env.CCTX_TOKEN;
-  const envProjectDir = process.env.CCTX_PROJECT_DIR;
+  if (envUrl && envToken) return { url: envUrl.replace(/\/$/, ""), token: envToken };
 
-  let url, token, projectDir;
   if (fs.existsSync(CONFIG_FILE)) {
     const text = fs.readFileSync(CONFIG_FILE, "utf-8");
-    url = (text.match(/^CCTX_URL=(.*)$/m) || [])[1];
-    token = (text.match(/^CCTX_TOKEN=(.*)$/m) || [])[1];
-    projectDir = (text.match(/^CCTX_PROJECT_DIR=(.*)$/m) || [])[1];
+    const url = (text.match(/^CCTX_URL=(.*)$/m) || [])[1];
+    const token = (text.match(/^CCTX_TOKEN=(.*)$/m) || [])[1];
+    if (url && token) return { url: url.replace(/\/$/, ""), token };
   }
-
-  url = envUrl || url;
-  token = envToken || token;
-  projectDir = envProjectDir || projectDir;
-
-  if (!url || !token) return null;
-  return { url: url.replace(/\/$/, ""), token, projectDir: projectDir || null };
-}
-
-function setConfigKey(key, value) {
-  let lines = [];
-  if (fs.existsSync(CONFIG_FILE)) {
-    lines = fs.readFileSync(CONFIG_FILE, "utf-8").split("\n").filter(Boolean);
-  }
-  const re = new RegExp(`^${key}=`);
-  const filtered = lines.filter((l) => !re.test(l));
-  filtered.push(`${key}=${value}`);
-  fs.mkdirSync(path.dirname(CONFIG_FILE), { recursive: true });
-  fs.writeFileSync(CONFIG_FILE, filtered.join("\n") + "\n", { mode: 0o600 });
+  return null;
 }
 
 function requireConfig() {
@@ -344,12 +325,18 @@ function pickFolder(items) {
       ];
       for (let i = 0; i < items.length; i++) {
         const b = items[i];
-        const meta = (b.last_active || "").slice(0, 10) || (b.workspace_id && b.workspace_id !== b.label ? b.workspace_id : "");
+        const meta = (b.last_active || "").slice(0, 10) || (b.workspace_id && b.workspace_id !== b.label && !b.workspace_id.startsWith("__") ? b.workspace_id : "");
         const label = b.label || b.workspace_id || "(unnamed)";
         const name = label.length > width - 16 ? label.slice(0, width - 17) + "…" : label;
         const pad = " ".repeat(Math.max(1, width - 4 - name.length - meta.length));
-        if (i === idx) lines.push(`\x1b[7m> ${name}${pad}${meta}\x1b[0m`);
-        else lines.push(`  ${name}${pad}\x1b[2m${meta}\x1b[0m`);
+        if (b.disabled) {
+          if (i === idx) lines.push(`\x1b[7;2m> ${name}${pad}${meta}\x1b[0m`);
+          else lines.push(`\x1b[2m  ${name}${pad}${meta}\x1b[0m`);
+        } else if (i === idx) {
+          lines.push(`\x1b[7m> ${name}${pad}${meta}\x1b[0m`);
+        } else {
+          lines.push(`  ${name}${pad}\x1b[2m${meta}\x1b[0m`);
+        }
       }
       stdout.write("\x1b[2J\x1b[H" + lines.join("\n") + "\n");
     };
@@ -377,105 +364,91 @@ function pickFolder(items) {
   });
 }
 
-function listProjectFolders(projectDir) {
-  if (!projectDir || !fs.existsSync(projectDir)) return [];
-  try {
-    return fs.readdirSync(projectDir, { withFileTypes: true })
-      .filter((e) => e.isDirectory() && !e.name.startsWith("."))
-      .map((e) => e.name)
-      .sort();
-  } catch { return []; }
-}
-
-async function resolveProjectDir() {
-  const cfg = loadConfig();
-  if (cfg && cfg.projectDir) return cfg.projectDir;
-
-  // First-run prompt: offer the conventional default if it exists.
-  const guess = path.join(os.homedir(), "dev", "github_projects");
-  const defaultPath = fs.existsSync(guess) ? guess : "";
-  const promptText = defaultPath
-    ? `Projects directory [${defaultPath}] (blank to skip): `
-    : "Projects directory (blank to skip): ";
-
-  const answer = (await prompt(promptText)).trim();
-  const chosen = answer || defaultPath;
-  if (!chosen) return null; // user opted out — fall back to home only
-
-  if (!fs.existsSync(chosen) || !fs.statSync(chosen).isDirectory()) {
-    console.error(`Not a directory: ${chosen}`);
-    return null;
-  }
-  setConfigKey("CCTX_PROJECT_DIR", chosen);
-  console.log(`Saved CCTX_PROJECT_DIR=${chosen} to ${CONFIG_FILE}`);
-  return chosen;
-}
-
 async function cmdStart(rest) {
   if (!process.stdin.isTTY || !process.stdout.isTTY) {
     console.error("cctx start requires a TTY.");
     process.exit(1);
   }
 
-  const projectDir = await resolveProjectDir();
   const registry = readRegistry();
+  const cwd = process.cwd();
+  const cwdSlug = path.basename(cwd) || "home";
+  const cwdRegistered = Object.values(registry).some(
+    (e) => e && e.cwd === cwd
+  );
 
-  // Build items: home (always) + folders under projectDir + any registry-only
-  // entries that don't shadow a folder. Folder name == workspace slug; the
-  // registry can override the cwd for a given slug.
-  const items = [
-    { workspace_id: "home", label: "home", cwd: os.homedir() },
-  ];
-
-  const seen = new Set(["home"]);
-  for (const name of listProjectFolders(projectDir)) {
-    const slug = name;
-    const cwd = (registry[slug] && registry[slug].cwd) || path.join(projectDir, name);
-    items.push({ workspace_id: slug, label: name, cwd });
-    seen.add(slug);
-  }
-  for (const [slug, entry] of Object.entries(registry)) {
-    if (seen.has(slug)) continue;
-    items.push({ workspace_id: slug, label: `${slug} (custom)`, cwd: entry.cwd });
+  // Items: every registered folder, then a footer row to add the current
+  // folder. The add-row's label changes when cwd is already registered.
+  const items = [];
+  const slugs = Object.keys(registry).sort((a, b) => a.localeCompare(b));
+  for (const slug of slugs) {
+    items.push({
+      workspace_id: slug,
+      label: slug,
+      cwd: registry[slug].cwd,
+    });
   }
 
-  items.push({ workspace_id: "__new__", label: "+ new folder…", cwd: null });
+  items.push({
+    workspace_id: "__add__",
+    label: cwdRegistered
+      ? `(current folder is already registered as "${slugForCwd(registry, cwd)}")`
+      : `+ Add this folder to cloud context  →  ${cwd}`,
+    cwd: cwd,
+    disabled: cwdRegistered,
+  });
+
+  // Empty state hint
+  if (slugs.length === 0) {
+    console.log("");
+    console.log("\x1b[1mcctx\x1b[0m — no projects added yet.");
+    console.log("\x1b[2mcd into a project folder, then run `cctx start` and pick the add row to register it.\x1b[0m");
+    console.log("");
+  }
 
   const picked = await pickFolder(items);
   if (!picked) return;
 
   let slug = picked.workspace_id;
-  let cwd = picked.cwd;
+  let launchCwd = picked.cwd;
 
-  if (slug === "__new__") {
-    const newSlug = (await prompt("Slug (e.g. my-project): ")).trim();
-    if (!newSlug) {
-      console.error("No slug — aborting.");
+  if (slug === "__add__") {
+    if (picked.disabled) {
+      console.log("Already registered. Re-run `cctx start` from elsewhere or pick the existing entry.");
+      process.exit(0);
+    }
+    slug = cwdSlug;
+    if (registry[slug] && registry[slug].cwd !== cwd) {
+      // Slug collision: another folder already owns this basename.
+      console.error(`Slug "${slug}" already maps to ${registry[slug].cwd}.`);
+      console.error(`Rename one of them or move the folder before re-adding.`);
       process.exit(1);
     }
-    const newCwd = (await prompt(`Path [${process.cwd()}]: `)).trim() || process.cwd();
-    if (!fs.existsSync(newCwd) || !fs.statSync(newCwd).isDirectory()) {
-      console.error(`Not a directory: ${newCwd}`);
-      process.exit(1);
-    }
-    registry[newSlug] = { cwd: newCwd, created_at: new Date().toISOString() };
+    registry[slug] = { cwd, created_at: new Date().toISOString() };
     writeRegistry(registry);
-    slug = newSlug;
-    cwd = newCwd;
+    launchCwd = cwd;
+    console.log(`Added "${slug}" → ${cwd}`);
   }
 
-  if (!cwd || !fs.existsSync(cwd)) {
-    console.error(`Folder not found for "${slug}": ${cwd || "(none)"}`);
+  if (!launchCwd || !fs.existsSync(launchCwd)) {
+    console.error(`Folder not found for "${slug}": ${launchCwd || "(none)"}`);
     process.exit(1);
   }
 
   const claudeBin = resolveClaudeBin();
   const child = spawn(claudeBin, [], {
     stdio: "inherit",
-    cwd,
+    cwd: launchCwd,
     env: { ...process.env, CCTX_WORKSPACE: slug },
   });
   child.on("exit", (code) => process.exit(code || 0));
+}
+
+function slugForCwd(registry, cwd) {
+  for (const [slug, entry] of Object.entries(registry)) {
+    if (entry && entry.cwd === cwd) return slug;
+  }
+  return null;
 }
 
 // ---------- rename ----------
