@@ -57,21 +57,25 @@ The `uuid` field must be globally unique. `ON CONFLICT(uuid)` updates content bu
 
 ## Session-start recap
 
-When the cctx hook injects a `PRIOR_SESSIONS` block (or `PRIOR_SESSIONS: none`), call `get_recent(session_id=<#1 from PRIOR_SESSIONS>, limit=20)` **before producing any output**. Once you have the result, write **exactly one sentence, ≤30 words**, as your **first visible text** — recapping what was actually worked on and offering a hook back in.
+The cctx hook injects a `PRIOR_SESSIONS` block in the system reminders on the **first** UserPromptSubmit of a session (the hook gates itself with a marker file, so subsequent prompts will not see this block). When you see it, produce a one-sentence snarky recap as your first visible text. Steps:
+
+1. Silently call `get_recent(session_id=<#1 from PRIOR_SESSIONS>, limit=20)`. **No text before, between, or after the tool call.** No "Tool loaded.", "Reading recap.", "Got it." — nothing. Tool-call narration breaks the rule even if the recap follows.
+2. Once the result returns, output **one sentence, ≤30 words**, as the very first thing the user sees. This sentence IS the recap.
+3. Then answer the user's actual prompt as you normally would, on the next line(s).
 
 **Voice:** dry, irreverent-sidekick register. Warm but never ceremonial, never a paragraph, never a bulleted recap.
 
-**Rules:**
-1. One sentence. ≤30 words. Hard cap.
-2. Call `get_recent` first — the result drives the sentence. Older session_ids are held in reserve; only call `get_recent` on them if the user's prompt references older work.
-3. Focus on what was built, fixed, or decided — not session mechanics (don't mention `/exit`, message counts, or that a session ended).
-4. Stale recency (last activity >7d): still pick up where you left off, but acknowledge the gap in the snark.
-5. First session in this workspace (`PRIOR_SESSIONS: none`): a one-line quip about finally being loaded up.
-6. Continuation chains: if a session is marked `continuation of <id>`, treat the chain as one logical session.
-7. Tone floor beats tone ceiling: if prior session was a production incident or long debug grind, dial snark down and stay warm.
-8. No `PRIOR_SESSIONS` line? Skip the recap — respond normally.
+**When to skip:**
+- No `PRIOR_SESSIONS` line in the reminders → skip the recap, respond normally. (The hook only injects it once per session; if it's not there, you've already done the recap or this isn't a session start.)
+- `PRIOR_SESSIONS: none` (first session in workspace) → output a single one-liner quip about finally being loaded up; same one-sentence cap.
 
-Do not write headers like "## Recap" or "Where we left off:". The sentence *is* the recap — lead with it, then answer whatever the user asked.
+**Tone calibration:**
+- Stale recency (last activity >7d): pick up where you left off, but acknowledge the gap in the snark.
+- Continuation chains (session marked `continuation of <id>`): treat the chain as one logical session.
+- Tone floor beats tone ceiling: if prior session was a production incident or long debug grind, dial snark down and stay warm.
+- Focus on what was built/fixed/decided — not session mechanics (don't mention `/exit`, message counts, or that a session ended).
+
+Do not write headers like "## Recap" or "Where we left off:". The sentence IS the recap — lead with it, then answer whatever the user asked.
 
 ## Architecture
 
@@ -123,19 +127,23 @@ When recalling prior conversations or saving new context, use cctx — not the m
 
 ## Session-start recap
 
-When the cctx hook injects a `PRIOR_SESSIONS` block (or `PRIOR_SESSIONS: none`), call `get_recent(session_id=<#1 from PRIOR_SESSIONS>, limit=20)` **before producing any output**. Once you have the result, write **exactly one sentence, ≤30 words**, as your **first visible text** — recapping what was actually worked on and offering a hook back in.
+The cctx hook injects a `PRIOR_SESSIONS` block in the system reminders on the **first** UserPromptSubmit of a session (the hook gates itself with a marker file, so subsequent prompts will not see this block). When you see it, produce a one-sentence snarky recap as your first visible text. Steps:
+
+1. Silently call `get_recent(session_id=<#1 from PRIOR_SESSIONS>, limit=20)`. **No text before, between, or after the tool call.** No "Tool loaded.", "Reading recap.", "Got it." — nothing. Tool-call narration breaks the rule even if the recap follows.
+2. Once the result returns, output **one sentence, ≤30 words**, as the very first thing the user sees. This sentence IS the recap.
+3. Then answer the user's actual prompt as you normally would, on the next line(s).
 
 **Voice:** dry, irreverent-sidekick register. Warm but never ceremonial, never a paragraph, never a bulleted recap.
 
-**Rules:**
-1. One sentence. ≤30 words. Hard cap.
-2. Call `get_recent` first — the result drives the sentence. Older session_ids are held in reserve; only call `get_recent` on them if the user's prompt references older work.
-3. Focus on what was built, fixed, or decided — not session mechanics (don't mention `/exit`, message counts, or that a session ended).
-4. Stale recency (last activity >7d): still pick up where you left off, but acknowledge the gap in the snark.
-5. First session in this workspace (`PRIOR_SESSIONS: none`): a one-line quip about finally being loaded up.
-6. Continuation chains: if a session is marked `continuation of <id>`, treat the chain as one logical session.
-7. Tone floor beats tone ceiling: if prior session was a production incident or long debug grind, dial snark down and stay warm.
-8. No `PRIOR_SESSIONS` line? Skip the recap — respond normally.
+**When to skip:**
+- No `PRIOR_SESSIONS` line in the reminders → skip the recap, respond normally. (The hook only injects it once per session; if it's not there, you've already done the recap or this isn't a session start.)
+- `PRIOR_SESSIONS: none` (first session in workspace) → output a single one-liner quip about finally being loaded up; same one-sentence cap.
 
-Do not write headers like "## Recap" or "Where we left off:". The sentence *is* the recap — lead with it, then answer whatever the user asked.
+**Tone calibration:**
+- Stale recency (last activity >7d): pick up where you left off, but acknowledge the gap in the snark.
+- Continuation chains (session marked `continuation of <id>`): treat the chain as one logical session.
+- Tone floor beats tone ceiling: if prior session was a production incident or long debug grind, dial snark down and stay warm.
+- Focus on what was built/fixed/decided — not session mechanics (don't mention `/exit`, message counts, or that a session ended).
+
+Do not write headers like "## Recap" or "Where we left off:". The sentence IS the recap — lead with it, then answer whatever the user asked.
 <!-- cctx:end -->

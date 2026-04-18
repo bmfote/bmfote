@@ -176,8 +176,18 @@ if names:
 # Fetch last 3 prior sessions for this workspace (excluding current) to power
 # the session-start recap. Only runs when we have a real session_id — without
 # one we can't exclude the current session and would recap ourselves.
+#
+# Gated to fire once per session: a marker file at $MARKER_DIR/$SESSION_ID.prior-injected
+# is created on the first UserPromptSubmit and checked on subsequent prompts.
+# This stops the recap rule from re-firing on every turn (the model was getting
+# nagged by PRIOR_SESSIONS mid-conversation and either repeating recaps or
+# silently dropping them).
 PRIOR_SESSIONS_BLOCK=""
+PRIOR_MARKER=""
 if [ -n "$SESSION_ID" ]; then
+  PRIOR_MARKER="$MARKER_DIR/${SESSION_ID}.prior-injected"
+fi
+if [ -n "$SESSION_ID" ] && [ ! -f "$PRIOR_MARKER" ]; then
   PRIOR_JSON=$(curl -s --connect-timeout 2 --max-time 3 -H "$AUTH" \
     "$CCTX_URL/api/sessions?workspace_id=$WORKSPACE_ID&limit=3&exclude_session_id=$SESSION_ID" 2>/dev/null)
 
@@ -234,4 +244,10 @@ if [ -n "$KNOWN_WS_LINE" ]; then
 fi
 if [ -n "$PRIOR_SESSIONS_BLOCK" ]; then
   echo "$PRIOR_SESSIONS_BLOCK"
+  # Mark that PRIOR_SESSIONS has been injected for this session so subsequent
+  # UserPromptSubmit hooks skip it. Touch only after a successful injection so
+  # a transient API failure on prompt #1 still gets a retry on prompt #2.
+  if [ -n "$PRIOR_MARKER" ]; then
+    : > "$PRIOR_MARKER"
+  fi
 fi
