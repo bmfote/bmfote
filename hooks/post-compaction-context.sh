@@ -158,26 +158,6 @@ fi
 
 # --- Normal message: workspace-scoped context + API reminder ---
 
-# Fetch recent messages for this workspace (not global)
-RECENT_WS=$(curl -s --connect-timeout 2 --max-time 3 -H "$AUTH" \
-  "$CCTX_URL/api/recent?hours=168&limit=3&workspace_id=$WORKSPACE_ID" 2>/dev/null)
-
-SESSION_CONTEXT=$(echo "$RECENT_WS" | python3 -c "
-import sys, json, os
-try:
-    msgs = json.load(sys.stdin)
-except Exception:
-    msgs = []
-ws = os.environ.get('CCTX_WORKSPACE', 'cctx-default')
-if msgs:
-    lines = [f'Recent activity in {ws}:']
-    for m in msgs:
-        ts = (m.get('timestamp') or '')[:10]
-        content = (m.get('content') or '')[:100].replace('\n', ' ')
-        lines.append(f'  [{ts}] {m.get(\"type\",\"?\")}: {content}')
-    print('\n'.join(lines))
-" 2>/dev/null)
-
 # Fetch known workspaces so Claude can recognize cross-workspace natural-language queries
 KNOWN_WS=$(curl -s --connect-timeout 2 --max-time 3 -H "$AUTH" \
   "$CCTX_URL/api/workspaces?limit=20" 2>/dev/null)
@@ -193,10 +173,65 @@ if names:
     print('Known workspaces: ' + ', '.join(names))
 " 2>/dev/null)
 
+# Fetch last 3 prior sessions for this workspace (excluding current) to power
+# the session-start recap. Only runs when we have a real session_id — without
+# one we can't exclude the current session and would recap ourselves.
+PRIOR_SESSIONS_BLOCK=""
+if [ -n "$SESSION_ID" ]; then
+  PRIOR_JSON=$(curl -s --connect-timeout 2 --max-time 3 -H "$AUTH" \
+    "$CCTX_URL/api/sessions?workspace_id=$WORKSPACE_ID&limit=3&exclude_session_id=$SESSION_ID" 2>/dev/null)
+
+  PRIOR_SESSIONS_BLOCK=$(echo "$PRIOR_JSON" | python3 -c "
+import sys, json
+from datetime import datetime, timezone
+
+try:
+    sessions = json.load(sys.stdin)
+except Exception:
+    sessions = []
+
+if not isinstance(sessions, list):
+    sessions = []
+
+if not sessions:
+    print('PRIOR_SESSIONS: none (first time in this workspace)')
+    sys.exit(0)
+
+def age(ts):
+    if not ts:
+        return '?'
+    try:
+        dt = datetime.fromisoformat(ts.replace('Z', '+00:00'))
+        delta = datetime.now(timezone.utc) - dt
+        days = delta.days
+        hours = delta.seconds // 3600
+        if days >= 1:
+            return f'{days}d ago'
+        if hours >= 1:
+            return f'{hours}h ago'
+        return f'{delta.seconds // 60}m ago'
+    except Exception:
+        return ts[:10]
+
+lines = ['PRIOR_SESSIONS (most recent first — call get_recent(session_id=#1) for the recap):']
+for i, s in enumerate(sessions, 1):
+    sid = s.get('session_id', '?')
+    a = age(s.get('last_timestamp'))
+    n = s.get('message_count', 0)
+    topic = (s.get('first_user_message') or '').replace('\n', ' ').strip()[:120]
+    cont = s.get('continuation_of')
+    if cont:
+        lines.append(f'  {i}. {sid} — {a}, {n} msgs — continuation of {cont}')
+    else:
+        lines.append(f'  {i}. {sid} — {a}, {n} msgs — \"{topic}\"')
+print('\n'.join(lines))
+" 2>/dev/null)
+fi
+
 echo "Cloud context available. Current workspace: $WORKSPACE_ID. MCP tools default to this workspace — pass workspace=\"<other>\" to cross, workspace=null for global. MCP tools: search_memory, find_error, get_context, get_recent, remember. Shell fallback: source ~/.claude/cctx.env && curl -s -H \"Authorization: Bearer \$CCTX_TOKEN\" \"\$CCTX_URL/api/search?q=QUERY&workspace_id=$WORKSPACE_ID\""
 if [ -n "$KNOWN_WS_LINE" ]; then
   echo "$KNOWN_WS_LINE"
 fi
-if [ -n "$SESSION_CONTEXT" ]; then
-  echo "$SESSION_CONTEXT"
+if [ -n "$PRIOR_SESSIONS_BLOCK" ]; then
+  echo "$PRIOR_SESSIONS_BLOCK"
 fi

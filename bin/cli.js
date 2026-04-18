@@ -84,6 +84,93 @@ function resolveClaudeBin() {
   catch { return "claude"; }
 }
 
+// ---------- project CLAUDE.md writer ----------
+// Writes a marker-delimited block to <cwd>/CLAUDE.md pointing Claude at cctx
+// for persistence in this project, plus session-start recap instructions. The
+// block is replaced in place on update (e.g. after a rename or a newer cctx
+// version changing the template). Content outside the markers is never touched.
+
+const CCTX_MARKER_START = "<!-- cctx:start -->";
+const CCTX_MARKER_END = "<!-- cctx:end -->";
+
+function buildCctxBlock(slug) {
+  return `${CCTX_MARKER_START}
+## Memory / Persistence (read this first)
+
+This project uses **cctx** for cross-session context — **do not write to \`~/.claude/projects/.../memory/*.md\`** for this repo. Use the MCP tools or REST API.
+
+- Workspace: \`${slug}\`
+- Endpoint: \`https://bmfote-api-production-7a63.up.railway.app\`
+- MCP tools: \`mcp__cctx-memory__remember\`, \`search_memory\`, \`get_recent\`, \`get_context\`, \`find_error\`
+- Shell fallback: \`source ~/.claude/cctx.env && curl -H "Authorization: Bearer $CCTX_TOKEN" "$CCTX_URL/api/search?q=QUERY&workspace_id=${slug}"\`
+
+When recalling prior conversations or saving new context, use cctx — not the markdown auto-memory system described in the global system prompt.
+
+## Session-start recap
+
+When the cctx hook injects a \`PRIOR_SESSIONS\` block (or \`PRIOR_SESSIONS: none\`), write **exactly one sentence, ~20 words max**, before your first tool call, recapping the prior session and offering a hook back in.
+
+**Voice:** dry, irreverent-sidekick register. Warm but never ceremonial, never a paragraph, never a bulleted recap.
+
+**Rules:**
+1. One sentence. ≤20 words. Hard cap.
+2. Most recent session drives the sentence. Call \`get_recent(session_id=<#1 from PRIOR_SESSIONS>, limit=20)\` first to see what was going on. Older session_ids are held in reserve — only call \`get_recent\` on them if the user's prompt references older work.
+3. Stale recency (last activity >7d): still pick up where you left off, but acknowledge the gap in the snark.
+4. First session in this workspace (\`PRIOR_SESSIONS: none\`): a one-line quip about finally being loaded up.
+5. Continuation chains: if a session is marked \`continuation of <id>\`, treat the chain as one logical session.
+6. Tone floor beats tone ceiling: if prior session was a production incident or long debug grind, dial snark down and stay warm.
+7. No \`PRIOR_SESSIONS\` line? Skip the recap — respond normally.
+
+Do not write headers like "## Recap" or "Where we left off:". The sentence *is* the recap — lead with it, then answer whatever the user asked.
+${CCTX_MARKER_END}`;
+}
+
+function escapeRegex(s) {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+// Returns "created" | "updated" | "appended" | "noop" | "skipped"
+function writeProjectClaudeMd(cwd, slug) {
+  if (!cwd || !slug) return "skipped";
+  const filePath = path.join(cwd, "CLAUDE.md");
+  const block = buildCctxBlock(slug);
+
+  let existing = null;
+  try {
+    if (fs.existsSync(filePath)) existing = fs.readFileSync(filePath, "utf-8");
+  } catch {
+    return "skipped";
+  }
+
+  // Case 1: file missing → create with just the block
+  if (existing === null) {
+    try {
+      fs.writeFileSync(filePath, block + "\n");
+      return "created";
+    } catch { return "skipped"; }
+  }
+
+  // Case 2: markers present → replace between them (idempotent update)
+  const re = new RegExp(
+    `${escapeRegex(CCTX_MARKER_START)}[\\s\\S]*?${escapeRegex(CCTX_MARKER_END)}`
+  );
+  if (re.test(existing)) {
+    const updated = existing.replace(re, block);
+    if (updated === existing) return "noop";
+    try {
+      fs.writeFileSync(filePath, updated);
+      return "updated";
+    } catch { return "skipped"; }
+  }
+
+  // Case 3: file exists but no markers → append (preserves user's content)
+  const sep = existing.endsWith("\n\n") ? "" : existing.endsWith("\n") ? "\n" : "\n\n";
+  try {
+    fs.writeFileSync(filePath, existing + sep + block + "\n");
+    return "appended";
+  } catch { return "skipped"; }
+}
+
 // ---------- folder registry ----------
 // Local map of workspace slug → cwd, so the picker can launch in the right
 // folder even for workspaces that only exist locally (haven't synced yet) or
@@ -240,6 +327,10 @@ async function cmdStart(rest) {
     }
     registry[cwdSlug] = { cwd, created_at: new Date().toISOString() };
     writeRegistry(registry);
+    const r = writeProjectClaudeMd(cwd, cwdSlug);
+    if (r === "created") console.log(`Created CLAUDE.md in ${cwd}`);
+    else if (r === "appended") console.log(`Appended cctx block to CLAUDE.md`);
+    else if (r === "updated") console.log(`Updated cctx block in CLAUDE.md`);
     console.log(`Added "${cwdSlug}" → ${cwd}`);
     return;
   }
@@ -301,6 +392,13 @@ async function cmdStart(rest) {
     console.error(`Folder not found for "${slug}": ${launchCwd || "(none)"}`);
     process.exit(1);
   }
+
+  // Write/refresh the cctx block in the project's CLAUDE.md. Idempotent — a
+  // noop when the block is already present and matches the current template.
+  const mdResult = writeProjectClaudeMd(launchCwd, slug);
+  if (mdResult === "created") console.log(`Created CLAUDE.md in ${launchCwd}`);
+  else if (mdResult === "appended") console.log(`Appended cctx block to CLAUDE.md`);
+  else if (mdResult === "updated") console.log(`Updated cctx block in CLAUDE.md`);
 
   process.stdout.write(`\n\x1b[1mSelected:\x1b[0m ${slug}\n\n`);
   const yolo = await prompt("\x1b[1mYOLO mode?\x1b[0m (--dangerously-skip-permissions) [Y/n] ");
