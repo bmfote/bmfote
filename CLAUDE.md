@@ -57,10 +57,10 @@ The `uuid` field must be globally unique. `ON CONFLICT(uuid)` updates content bu
 
 ## Session-start recap
 
-The cctx hook injects a `PRIOR_SESSIONS` block in the system reminders on the **first** UserPromptSubmit of a session (the hook gates itself with a marker file, so subsequent prompts will not see this block). When you see it, produce a one-sentence snarky recap as your first visible text. Steps:
+The cctx hook injects a `PRIOR_SESSIONS` block plus a `RECAP_CONTENT` block (last ~20 messages of session #1) in the system reminders on the **first** UserPromptSubmit of a session. The hook gates itself with a marker file, so subsequent prompts will not see these blocks. When you see them:
 
-1. Silently call `get_recent(session_id=<#1 from PRIOR_SESSIONS>, limit=20)`. **No text before, between, or after the tool call.** No "Tool loaded.", "Reading recap.", "Got it." — nothing. Tool-call narration breaks the rule even if the recap follows.
-2. Once the result returns, output **one sentence, ≤30 words**, as the very first thing the user sees. This sentence IS the recap.
+1. Do **not** call `get_recent` — the content is already inlined in `RECAP_CONTENT`. No tool call of any kind before the recap sentence. (get_recent is a deferred MCP tool; invoking it requires a prior `ToolSearch` turn, which burns the first visible message and breaks the rule.)
+2. Output **one sentence, ≤30 words**, as the very first thing the user sees, crafted from `RECAP_CONTENT`. This sentence IS the recap.
 3. Then answer the user's actual prompt as you normally would, on the next line(s).
 
 **Voice:** dry, irreverent-sidekick register. Warm but never ceremonial, never a paragraph, never a bulleted recap.
@@ -127,10 +127,10 @@ When recalling prior conversations or saving new context, use cctx — not the m
 
 ## Session-start recap
 
-The cctx hook injects a `PRIOR_SESSIONS` block in the system reminders on the **first** UserPromptSubmit of a session (the hook gates itself with a marker file, so subsequent prompts will not see this block). When you see it, produce a one-sentence snarky recap as your first visible text. Steps:
+The cctx hook injects a `PRIOR_SESSIONS` block plus a `RECAP_CONTENT` block (last ~20 messages of session #1) in the system reminders on the **first** UserPromptSubmit of a session. The hook gates itself with a marker file, so subsequent prompts will not see these blocks. When you see them:
 
-1. Silently call `get_recent(session_id=<#1 from PRIOR_SESSIONS>, limit=20)`. **No text before, between, or after the tool call.** No "Tool loaded.", "Reading recap.", "Got it." — nothing. Tool-call narration breaks the rule even if the recap follows.
-2. Once the result returns, output **one sentence, ≤30 words**, as the very first thing the user sees. This sentence IS the recap.
+1. Do **not** call `get_recent` — the content is already inlined in `RECAP_CONTENT`. No tool call of any kind before the recap sentence. (get_recent is a deferred MCP tool; invoking it requires a prior `ToolSearch` turn, which burns the first visible message and breaks the rule.)
+2. Output **one sentence, ≤30 words**, as the very first thing the user sees, crafted from `RECAP_CONTENT`. This sentence IS the recap.
 3. Then answer the user's actual prompt as you normally would, on the next line(s).
 
 **Voice:** dry, irreverent-sidekick register. Warm but never ceremonial, never a paragraph, never a bulleted recap.
