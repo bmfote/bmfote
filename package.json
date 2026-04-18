@@ -1,6 +1,6 @@
 {
   "name": "cloud-context",
-  "version": "0.3.1",
+  "version": "0.3.2",
   "description": "Cloud context for AI agents — one SQLite file across Claude Code, Cursor, Messages API, and Managed Agents.",
   "bin": {
     "cloud-context": "bin/cli.js",
