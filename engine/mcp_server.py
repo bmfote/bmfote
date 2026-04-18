@@ -147,24 +147,37 @@ def get_context(uuid: str, context: int = 1, workspace: Optional[str] = None) ->
 
 
 @mcp.tool()
-def get_recent(hours: int = 24, limit: int = 50, workspace: Optional[str] = None) -> str:
+def get_recent(
+    hours: int = 24,
+    limit: int = 50,
+    workspace: Optional[str] = None,
+    session_id: Optional[str] = None,
+) -> str:
     """Get recent cloud context — what was I (or any agent) working on?
 
     Args:
-        hours: How far back to look (default 24, max 168)
+        hours: How far back to look (default 24, max 168). Ignored when session_id is set.
         limit: Max results (default 50, max 200)
         workspace: Workspace scope (defaults to 'cctx-default').
+        session_id: When set, returns messages from that specific session only —
+            used by the session-start recap to pull a prior session's content.
     """
     *_, q_recent = _get_queries()
     hours = min(hours, 168)
     limit = min(limit, 200)
 
-    results = q_recent(hours, limit, None, workspace)
+    results = q_recent(hours, limit, session_id, workspace)
 
     if not results:
-        return f"No messages in the last {hours} hours."
+        scope = f"session {session_id}" if session_id else f"the last {hours} hours"
+        return f"No messages in {scope}."
 
-    lines = [f"{len(results)} messages in the last {hours} hours:\n"]
+    header = (
+        f"{len(results)} messages from session {session_id}:\n"
+        if session_id
+        else f"{len(results)} messages in the last {hours} hours:\n"
+    )
+    lines = [header]
     for r in results:
         project = r.get("project") or "unknown"
         preview = (r["content"] or "")[:120].replace("\n", " ")

@@ -498,6 +498,76 @@ def create_session(request: Request, session: SessionCreate):
 # WORKSPACES — list + rename (supports cctx start picker & rename)
 # =============================================================
 
+@app.get("/api/sessions")
+@limiter.limit("60/minute")
+def list_sessions(
+    request: Request,
+    workspace_id: str = Query(..., description="Workspace scope (required)"),
+    limit: int = Query(default=3, le=20),
+    exclude_session_id: str = Query(default=None),
+):
+    """Last N sessions in a workspace, newest first, with metadata for the
+    session-start recap hook. Detects continuation chains by looking for the
+    compaction marker in the first user message and linking to a session that
+    ended within 60 minutes of this one's first timestamp."""
+    conn = get_conn()
+    rows = rows_to_dicts(conn.execute(
+        """
+        SELECT m.session_id,
+               MAX(m.timestamp) AS last_timestamp,
+               MIN(m.timestamp) AS first_timestamp,
+               COUNT(*) AS message_count,
+               (SELECT content FROM messages m2
+                 WHERE m2.session_id = m.session_id
+                   AND m2.workspace_id = m.workspace_id
+                   AND m2.type = 'user'
+                 ORDER BY m2.timestamp ASC LIMIT 1) AS first_user_message
+        FROM messages m
+        WHERE m.workspace_id = ?
+          AND (? IS NULL OR m.session_id != ?)
+        GROUP BY m.session_id
+        ORDER BY last_timestamp DESC
+        LIMIT ?
+        """,
+        (workspace_id, exclude_session_id, exclude_session_id, limit),
+    ))
+
+    marker = "This session is being continued from a previous conversation"
+    for r in rows:
+        msg = r.get("first_user_message") or ""
+        r["is_continuation"] = marker in msg[:500]
+        r["continuation_of"] = None
+        if r["is_continuation"] and r.get("first_timestamp"):
+            prior = row_to_dict(conn.execute(
+                """
+                SELECT session_id, MAX(timestamp) AS last_ts
+                FROM messages
+                WHERE workspace_id = ?
+                  AND session_id != ?
+                GROUP BY session_id
+                HAVING last_ts <= ?
+                ORDER BY last_ts DESC
+                LIMIT 1
+                """,
+                (workspace_id, r["session_id"], r["first_timestamp"]),
+            ))
+            if prior and prior.get("last_ts"):
+                try:
+                    gap = (
+                        datetime.fromisoformat(r["first_timestamp"].replace("Z", "+00:00"))
+                        - datetime.fromisoformat(prior["last_ts"].replace("Z", "+00:00"))
+                    ).total_seconds()
+                    if 0 <= gap <= 3600:
+                        r["continuation_of"] = prior["session_id"]
+                except Exception:
+                    pass
+        # Trim the first-user-message preview — hook only needs a topic hint
+        if r.get("first_user_message"):
+            r["first_user_message"] = r["first_user_message"][:200]
+
+    return rows
+
+
 @app.get("/api/workspaces")
 @limiter.limit("60/minute")
 def list_workspaces(request: Request, limit: int = Query(default=50, le=200)):
