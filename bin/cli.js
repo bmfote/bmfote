@@ -79,15 +79,6 @@ const api = {
 
 // ---------- helpers ----------
 
-function currentSessionId() {
-  try {
-    const out = execSync("ls -t ~/.claude/projects/*/*.jsonl 2>/dev/null | head -1", {
-      encoding: "utf-8",
-    }).trim();
-    return out ? path.basename(out, ".jsonl") : null;
-  } catch { return null; }
-}
-
 function resolveClaudeBin() {
   try { return execSync("which claude", { encoding: "utf-8" }).trim() || "claude"; }
   catch { return "claude"; }
@@ -151,161 +142,6 @@ async function cmdStatus() {
   console.log(`Messages: ${(stats.messages || 0).toLocaleString()}`);
   console.log(`Sessions: ${(stats.sessions || 0).toLocaleString()}`);
   console.log(`Latest:   ${stats.last_message || "—"}`);
-}
-
-async function cmdSearch(rest) {
-  const q = rest.join(" ").trim();
-  if (!q) {
-    console.error('Usage: cctx search "query"');
-    process.exit(1);
-  }
-  const results = await api.get(`/api/search?q=${encodeURIComponent(q)}`);
-  if (!results || !results.length) {
-    console.log(`No results for: ${q}`);
-    return;
-  }
-  for (const r of results) {
-    const ts = (r.timestamp || "").slice(0, 10);
-    console.log(`[${r.type}] ${ts} (${r.project || "unknown"})`);
-    console.log(`  ${r.snippet}`);
-    console.log(`  uuid=${r.uuid}`);
-    console.log("");
-  }
-}
-
-function pickBookmark(bookmarks) {
-  return new Promise((resolve) => {
-    const stdin = process.stdin;
-    const stdout = process.stdout;
-    let items = [...bookmarks];
-    let idx = 0;
-
-    const render = () => {
-      const width = stdout.columns || 80;
-      const lines = [
-        "\x1b[1mcctx\x1b[0m — Select a thread to resume",
-        "\x1b[2m↑↓ navigate  ↵ select  d delete  q quit\x1b[0m",
-        "",
-      ];
-      for (let i = 0; i < items.length; i++) {
-        const b = items[i];
-        const date = (b.last_active || "").slice(0, 10) || "—";
-        const name = b.name.length > width - 16 ? b.name.slice(0, width - 17) + "…" : b.name;
-        const pad = " ".repeat(Math.max(1, width - 4 - name.length - date.length));
-        if (i === idx) lines.push(`\x1b[7m> ${name}${pad}${date}\x1b[0m`);
-        else lines.push(`  ${name}${pad}\x1b[2m${date}\x1b[0m`);
-      }
-      stdout.write("\x1b[2J\x1b[H" + lines.join("\n") + "\n");
-    };
-
-    const cleanup = () => {
-      stdin.removeListener("data", onData);
-      if (stdin.isTTY) stdin.setRawMode(false);
-      stdin.pause();
-      stdout.write("\x1b[?25h");
-    };
-
-    const onData = async (buf) => {
-      const s = buf.toString();
-      if (s === "\x03" || s === "q") { cleanup(); stdout.write("\n"); resolve(null); return; }
-      if (s === "\x1b[A" || s === "k") { idx = (idx - 1 + items.length) % items.length; render(); return; }
-      if (s === "\x1b[B" || s === "j") { idx = (idx + 1) % items.length; render(); return; }
-      if (s === "\r" || s === "\n") { cleanup(); resolve(items[idx]); return; }
-      if (s === "d") {
-        const victim = items[idx];
-        if (!victim) return;
-        try { await api.del(`/api/bookmarks/${encodeURIComponent(victim.name)}`); } catch (e) {
-          cleanup(); stdout.write(`\nError: ${e.message}\n`); resolve(null); return;
-        }
-        items.splice(idx, 1);
-        if (idx >= items.length) idx = Math.max(0, items.length - 1);
-        if (!items.length) { cleanup(); stdout.write("\n(no bookmarks left)\n"); resolve(null); return; }
-        render();
-      }
-    };
-
-    stdout.write("\x1b[?25l");
-    stdin.setRawMode(true);
-    stdin.resume();
-    stdin.on("data", onData);
-    render();
-  });
-}
-
-async function cmdLaunch(rest) {
-  const sub = rest[0];
-
-  if (!sub && process.stdin.isTTY && process.stdout.isTTY) {
-    const bookmarks = (await api.get("/api/bookmarks")) || [];
-    if (!bookmarks.length) {
-      console.log('(none) — save with: cctx launch --save "name"');
-      return;
-    }
-    const picked = await pickBookmark(bookmarks);
-    if (!picked) return;
-    const claudeBin = resolveClaudeBin();
-    const child = spawn(claudeBin, ["--resume", picked.session_id], { stdio: "inherit", env: process.env });
-    child.on("exit", (code) => process.exit(code || 0));
-    return;
-  }
-
-  if (sub === "--save") {
-    const name = rest[1];
-    const sid = rest[2] || currentSessionId();
-    if (!name) {
-      console.error('Usage: cctx launch --save "name" [session_id]');
-      process.exit(1);
-    }
-    if (!sid) {
-      console.error("Could not detect current session. Provide a session_id.");
-      process.exit(1);
-    }
-    await api.post("/api/bookmarks", { name, session_id: sid });
-    console.log(`✓ ${name} → ${sid.slice(0, 8)}…`);
-    return;
-  }
-
-  if (sub === "--remove") {
-    const name = rest[1];
-    if (!name) {
-      console.error('Usage: cctx launch --remove "name"');
-      process.exit(1);
-    }
-    await api.del(`/api/bookmarks/${encodeURIComponent(name)}`);
-    console.log(`✓ removed ${name}`);
-    return;
-  }
-
-  if (sub === "--list") {
-    const bookmarks = (await api.get("/api/bookmarks")) || [];
-    if (!bookmarks.length) {
-      console.log('(none) — save with: cctx launch --save "name"');
-      return;
-    }
-    for (const b of bookmarks) {
-      const date = (b.last_active || "").slice(0, 10);
-      console.log(`${b.name}\t${b.session_id}\t${date}`);
-    }
-    return;
-  }
-
-  // Plain resume: cctx launch <name>
-  if (sub && !sub.startsWith("-")) {
-    const bookmarks = (await api.get("/api/bookmarks")) || [];
-    const hit = bookmarks.find((b) => b.name === sub);
-    if (!hit) {
-      console.error(`No bookmark named "${sub}".`);
-      process.exit(1);
-    }
-    const claudeBin = resolveClaudeBin();
-    const child = spawn(claudeBin, ["--resume", hit.session_id], { stdio: "inherit", env: process.env });
-    child.on("exit", (code) => process.exit(code || 0));
-    return;
-  }
-
-  console.error('Usage: cctx launch <name> | --save "name" | --list | --remove "name"');
-  console.error("Tip: pipe to fzf → cctx launch --list | fzf | awk '{print $1}' | xargs cctx launch");
-  process.exit(1);
 }
 
 // ---------- start (folder picker) ----------
@@ -526,12 +362,6 @@ Commands:
   cctx status                                      Connection + stats
   cctx start                                       Arrow-key picker over workspaces (folders)
   cctx rename <old> <new>                          Rename a workspace (rewrites all rows)
-  cctx search "query"                              FTS over all messages
-  cctx launch                                      Arrow-key picker over bookmarks (specific threads)
-  cctx launch <name>                               Resume bookmarked session by name
-  cctx launch --save "name" [session_id]           Bookmark a session
-  cctx launch --list                               List bookmarks (tab-delimited; pipe to fzf)
-  cctx launch --remove "name"                      Delete a bookmark
 
 Backend: https://github.com/bmfote/bmfote#host-your-own-server
 `);
@@ -548,8 +378,6 @@ Backend: https://github.com/bmfote/bmfote#host-your-own-server
     switch (command) {
       case "setup":  return await cmdSetup(args.slice(1));
       case "status": return await cmdStatus();
-      case "search": return await cmdSearch(args.slice(1));
-      case "launch": return await cmdLaunch(args.slice(1));
       case "start":  return await cmdStart(args.slice(1));
       case "rename": return await cmdRename(args.slice(1));
       default:

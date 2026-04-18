@@ -13,15 +13,8 @@ CREATE TABLE IF NOT EXISTS sessions (
   project TEXT,
   first_message_at TIMESTAMP,
   last_message_at TIMESTAMP,
-  message_count INTEGER DEFAULT 0,
-  bookmark_name TEXT
+  message_count INTEGER DEFAULT 0
 );
-
--- Migration for existing DBs (Turso):
---   ALTER TABLE sessions ADD COLUMN bookmark_name TEXT;
-
-CREATE UNIQUE INDEX IF NOT EXISTS idx_sessions_bookmark
-  ON sessions(bookmark_name) WHERE bookmark_name IS NOT NULL;
 
 CREATE TABLE IF NOT EXISTS messages (
   id INTEGER PRIMARY KEY,

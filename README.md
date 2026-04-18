@@ -114,11 +114,8 @@ Restart Claude Code. Memory is auto-captured and auto-recalled across sessions. 
 
 ```bash
 cctx status                         # connection + stats
-cctx search "ICP we agreed on"      # BM25 search over all messages
-cctx launch                         # interactive saved-thread picker
-cctx launch --save "acme-deal"      # bookmark current session
-cctx docs ingest <url|file> [tags]  # index reference docs alongside memory
-cctx docs search "rate limit"       # FTS over ingested docs
+cctx start                          # arrow-key picker over workspaces (folders)
+cctx rename <old> <new>             # rename a workspace
 ```
 
 Safe to re-run; run once per machine.
