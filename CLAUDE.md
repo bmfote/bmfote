@@ -57,18 +57,19 @@ The `uuid` field must be globally unique. `ON CONFLICT(uuid)` updates content bu
 
 ## Session-start recap
 
-When the cctx hook injects a `PRIOR_SESSIONS` block (or `PRIOR_SESSIONS: none`), write **exactly one sentence, ~20 words max**, before your first tool call, recapping the prior session and offering a hook back in.
+When the cctx hook injects a `PRIOR_SESSIONS` block (or `PRIOR_SESSIONS: none`), call `get_recent(session_id=<#1 from PRIOR_SESSIONS>, limit=20)` **before producing any output**. Once you have the result, write **exactly one sentence, ≤30 words**, as your **first visible text** — recapping what was actually worked on and offering a hook back in.
 
 **Voice:** dry, irreverent-sidekick register. Warm but never ceremonial, never a paragraph, never a bulleted recap.
 
 **Rules:**
-1. One sentence. ≤20 words. Hard cap.
-2. Most recent session drives the sentence. Call `get_recent(session_id=<#1 from PRIOR_SESSIONS>, limit=20)` first to see what was going on. Older session_ids are held in reserve — only call `get_recent` on them if the user's prompt references older work.
-3. Stale recency (last activity >7d): still pick up where you left off, but acknowledge the gap in the snark.
-4. First session in this workspace (`PRIOR_SESSIONS: none`): a one-line quip about finally being loaded up.
-5. Continuation chains: if a session is marked `continuation of <id>`, treat the chain as one logical session.
-6. Tone floor beats tone ceiling: if prior session was a production incident or long debug grind, dial snark down and stay warm.
-7. No `PRIOR_SESSIONS` line? Skip the recap — respond normally.
+1. One sentence. ≤30 words. Hard cap.
+2. Call `get_recent` first — the result drives the sentence. Older session_ids are held in reserve; only call `get_recent` on them if the user's prompt references older work.
+3. Focus on what was built, fixed, or decided — not session mechanics (don't mention `/exit`, message counts, or that a session ended).
+4. Stale recency (last activity >7d): still pick up where you left off, but acknowledge the gap in the snark.
+5. First session in this workspace (`PRIOR_SESSIONS: none`): a one-line quip about finally being loaded up.
+6. Continuation chains: if a session is marked `continuation of <id>`, treat the chain as one logical session.
+7. Tone floor beats tone ceiling: if prior session was a production incident or long debug grind, dial snark down and stay warm.
+8. No `PRIOR_SESSIONS` line? Skip the recap — respond normally.
 
 Do not write headers like "## Recap" or "Where we left off:". The sentence *is* the recap — lead with it, then answer whatever the user asked.
 
@@ -107,3 +108,34 @@ python -m engine.server    # Starts on PORT from .env (default 8026)
 - `conn.execute(sql, params)` requires `params` as a **tuple**, not a list
 - Embedded replica: `conn.sync()` after writes to push to Turso Cloud
 - FTS5 triggers fire normally — same as standard SQLite
+
+<!-- cctx:start -->
+## Memory / Persistence (read this first)
+
+This project uses **cctx** for cross-session context — **do not write to `~/.claude/projects/.../memory/*.md`** for this repo. Use the MCP tools or REST API.
+
+- Workspace: `bmfote`
+- Endpoint: `https://bmfote-api-production-7a63.up.railway.app`
+- MCP tools: `mcp__cctx-memory__remember`, `search_memory`, `get_recent`, `get_context`, `find_error`
+- Shell fallback: `source ~/.claude/cctx.env && curl -H "Authorization: Bearer $CCTX_TOKEN" "$CCTX_URL/api/search?q=QUERY&workspace_id=bmfote"`
+
+When recalling prior conversations or saving new context, use cctx — not the markdown auto-memory system described in the global system prompt.
+
+## Session-start recap
+
+When the cctx hook injects a `PRIOR_SESSIONS` block (or `PRIOR_SESSIONS: none`), call `get_recent(session_id=<#1 from PRIOR_SESSIONS>, limit=20)` **before producing any output**. Once you have the result, write **exactly one sentence, ≤30 words**, as your **first visible text** — recapping what was actually worked on and offering a hook back in.
+
+**Voice:** dry, irreverent-sidekick register. Warm but never ceremonial, never a paragraph, never a bulleted recap.
+
+**Rules:**
+1. One sentence. ≤30 words. Hard cap.
+2. Call `get_recent` first — the result drives the sentence. Older session_ids are held in reserve; only call `get_recent` on them if the user's prompt references older work.
+3. Focus on what was built, fixed, or decided — not session mechanics (don't mention `/exit`, message counts, or that a session ended).
+4. Stale recency (last activity >7d): still pick up where you left off, but acknowledge the gap in the snark.
+5. First session in this workspace (`PRIOR_SESSIONS: none`): a one-line quip about finally being loaded up.
+6. Continuation chains: if a session is marked `continuation of <id>`, treat the chain as one logical session.
+7. Tone floor beats tone ceiling: if prior session was a production incident or long debug grind, dial snark down and stay warm.
+8. No `PRIOR_SESSIONS` line? Skip the recap — respond normally.
+
+Do not write headers like "## Recap" or "Where we left off:". The sentence *is* the recap — lead with it, then answer whatever the user asked.
+<!-- cctx:end -->
