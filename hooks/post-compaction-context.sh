@@ -228,7 +228,7 @@ print('\n'.join(lines))
 " 2>/dev/null)
 fi
 
-echo "Cloud context available. Current workspace: $WORKSPACE_ID. MCP tools default to this workspace — pass workspace=\"<other>\" to cross, workspace=null for global. MCP tools: search_memory, find_error, get_context, get_recent, remember. Shell fallback: source ~/.claude/cctx.env && curl -s -H \"Authorization: Bearer \$CCTX_TOKEN\" \"\$CCTX_URL/api/search?q=QUERY&workspace_id=$WORKSPACE_ID\""
+echo "Cloud context available. Current workspace: $WORKSPACE_ID. MCP tools do NOT auto-scope — pass workspace=\"$WORKSPACE_ID\" on search_memory/find_error/remember calls (get_recent with session_id auto-resolves). MCP tools: search_memory, find_error, get_context, get_recent, remember. Shell fallback: source ~/.claude/cctx.env && curl -s -H \"Authorization: Bearer \$CCTX_TOKEN\" \"\$CCTX_URL/api/search?q=QUERY&workspace_id=$WORKSPACE_ID\""
 if [ -n "$KNOWN_WS_LINE" ]; then
   echo "$KNOWN_WS_LINE"
 fi

@@ -267,20 +267,37 @@ def query_message(uuid: str, context: int = 1, workspace_id: str = None):
 
 
 def query_recent(hours: int = 24, limit: int = 50, session_id: str = None, workspace_id: str = None):
-    """Get recent messages, optionally filtered by session."""
-    workspace_id = workspace_id or DEFAULT_WORKSPACE
+    """Get recent messages, optionally filtered by session.
+
+    When session_id is given without workspace_id, skip the workspace filter —
+    session UUIDs are globally unique, and remote MCP callers don't know which
+    workspace owns a session, so forcing the cctx-default fallback drops valid
+    rows. Non-session calls still fall back to DEFAULT_WORKSPACE.
+    """
     conn = get_conn()
     if session_id:
-        sql = """
-            SELECT m.uuid, m.session_id, m.type, m.role, m.content, m.timestamp,
-                   s.project
-            FROM messages m
-            LEFT JOIN sessions s ON m.session_id = s.session_id
-            WHERE m.session_id = ? AND m.workspace_id = ?
-            ORDER BY m.timestamp DESC LIMIT ?
-        """
-        params: list = [session_id, workspace_id, limit]
+        if workspace_id:
+            sql = """
+                SELECT m.uuid, m.session_id, m.type, m.role, m.content, m.timestamp,
+                       s.project
+                FROM messages m
+                LEFT JOIN sessions s ON m.session_id = s.session_id
+                WHERE m.session_id = ? AND m.workspace_id = ?
+                ORDER BY m.timestamp DESC LIMIT ?
+            """
+            params: list = [session_id, workspace_id, limit]
+        else:
+            sql = """
+                SELECT m.uuid, m.session_id, m.type, m.role, m.content, m.timestamp,
+                       s.project
+                FROM messages m
+                LEFT JOIN sessions s ON m.session_id = s.session_id
+                WHERE m.session_id = ?
+                ORDER BY m.timestamp DESC LIMIT ?
+            """
+            params = [session_id, limit]
     else:
+        workspace_id = workspace_id or DEFAULT_WORKSPACE
         cutoff = (datetime.now(timezone.utc) - timedelta(hours=hours)).isoformat()
         sql = """
             SELECT m.uuid, m.session_id, m.type, m.role, m.content, m.timestamp,
