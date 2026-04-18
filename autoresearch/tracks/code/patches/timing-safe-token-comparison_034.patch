@@ -1,0 +1,21 @@
+--- a/engine/server.py
++++ b/engine/server.py
+@@ -1,8 +1,9 @@
+ #!/usr/bin/env python3
+ """FastAPI search server for Claude memory — Turso Cloud (libSQL embedded replica)."""
+ 
++import hmac
+ import logging
+ import os
+ import time
+ from contextlib import asynccontextmanager
+ from datetime import datetime, timedelta, timezone
+@@ -95,7 +96,7 @@ async def auth_middleware(request: Request, call_next):
+     path = request.url.path
+     if API_TOKEN and (path.startswith("/api/") or path.startswith("/mcp/")):
+         auth = request.headers.get("authorization", "")
+-        if not auth.startswith("Bearer ") or auth[7:] != API_TOKEN:
++        if not auth.startswith("Bearer ") or not hmac.compare_digest(auth[7:], API_TOKEN):
+             return JSONResponse(status_code=401, content={"error": "unauthorized"})
+     return await call_next(request)
+ 

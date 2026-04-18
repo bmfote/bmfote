@@ -43,6 +43,7 @@ from autoresearch.eval_common import (
     Experiment,
     append_jsonl,
     apply_diff,
+    construct_insertion_diff,
     git_worktree_add,
     git_worktree_remove,
     load_best,
@@ -51,6 +52,7 @@ from autoresearch.eval_common import (
     save_best,
     save_patch,
     scope_check,
+    validate_onboard_worktree,
     validate_worktree,
 )
 from autoresearch.judge import (
@@ -60,6 +62,8 @@ from autoresearch.judge import (
     context_rot_composite_score,
     context_rot_min_axis,
     min_axis,
+    onboard_composite_score,
+    onboard_min_axis,
     recall_composite_score,
     recall_min_axis,
 )
@@ -68,6 +72,7 @@ MOAT_TARGET_JSONL = prepare.MOAT_DIR / "target.jsonl"
 CODE_TARGET_JSONL = prepare.CODE_DIR / "target.jsonl"
 RECALL_TARGET_JSONL = prepare.RECALL_DIR / "target.jsonl"
 CONTEXT_ROT_TARGET_JSONL = prepare.CONTEXT_ROT_DIR / "target.jsonl"
+ONBOARD_TARGET_JSONL = prepare.ONBOARD_DIR / "target.jsonl"
 
 # Promotion gate — designed for a "ranked list of good pitches" artifact,
 # not strict monotonic improvement. Once the agent hits the top of the scale,
@@ -1204,10 +1209,393 @@ def run_context_rot_loop(max_experiments: int, max_wall_s: int | None) -> int:
     return executed
 
 
+# ---------------------------------------------------------------------------
+# Onboard track
+# ---------------------------------------------------------------------------
+
+ONBOARD_PROMOTION_COMPOSITE_FLOOR = 7.0
+ONBOARD_PROMOTION_MIN_AXIS = 6
+ONBOARD_DRIFT_HALT_THRESHOLD = 1.0
+
+# Allowed scope for onboard patches — mirrors program.md / rubric.md.
+# The agent's target_file schema is constrained to the first 5; scope_check
+# here also lets pre-existing legacy paths pass through if the worktree
+# somehow picks them up (belt-and-suspenders).
+ONBOARD_ALLOWED_PATHS = [
+    "installer/setup.sh",
+    "bin/cli.js",
+    "hooks/post-compaction-context.sh",
+    "hooks/stop.sh",
+    "hooks/sync-transcript.sh",
+]
+
+# One mode per silent-failure site. Each mode constrains the agent's anchor
+# region so it can't drift into F2-style branching sprees.
+_ONBOARD_MODE_SEQUENCE = [
+    "mcp_verify",
+    "mcp_reachable",
+    "token_shape",
+    "restart_nudge",
+    "hooks_fired",
+    "discover",
+]
+
+
+def _rotate_onboard_mode(i: int) -> str:
+    return _ONBOARD_MODE_SEQUENCE[i % len(_ONBOARD_MODE_SEQUENCE)]
+
+
+def _load_onboard_survivors(n: int = 5) -> list[dict[str, Any]]:
+    if not ONBOARD_TARGET_JSONL.exists():
+        return []
+    lines = ONBOARD_TARGET_JSONL.read_text().splitlines()
+    survivors: list[dict[str, Any]] = []
+    for line in lines[-n * 2:]:
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            survivors.append(json.loads(line))
+        except json.JSONDecodeError:
+            continue
+    return survivors[-n:]
+
+
+def _onboard_gate_check(verdict: dict[str, Any]) -> tuple[bool, str]:
+    composite = onboard_composite_score(verdict)
+    min_ax = onboard_min_axis(verdict)
+
+    if verdict.get("scope_violation", False):
+        return (False, "scope_violation true")
+
+    if min_ax < ONBOARD_PROMOTION_MIN_AXIS:
+        return (False, f"min_axis {min_ax} < {ONBOARD_PROMOTION_MIN_AXIS}")
+
+    if composite < ONBOARD_PROMOTION_COMPOSITE_FLOOR:
+        return (False, f"composite {composite:.2f} < floor {ONBOARD_PROMOTION_COMPOSITE_FLOOR}")
+
+    return (True, f"composite {composite:.2f} clears floor {ONBOARD_PROMOTION_COMPOSITE_FLOOR}")
+
+
+def _onboard_promote(
+    candidate: dict[str, Any],
+    verdict: dict[str, Any],
+    experiment_i: int,
+    validation_result: dict[str, Any],
+    constructed_diff: str,
+) -> dict[str, Any]:
+    composite = onboard_composite_score(verdict)
+    insertion_lines = candidate.get("insertion_lines", []) or []
+    survivor = {
+        "experiment": experiment_i,
+        "ts": now(),
+        "change_id": candidate.get("change_id", ""),
+        "mode": candidate.get("mode", ""),
+        "target_file": candidate.get("target_file", ""),
+        "anchor_line": candidate.get("anchor_line", ""),
+        "insertion_lines": insertion_lines,
+        "lines_added": len(insertion_lines),
+        "description": candidate.get("description", ""),
+        "rationale": candidate.get("rationale", ""),
+        "failure_modes_addressed": candidate.get("failure_modes_addressed", []),
+        "error_message": candidate.get("error_message", ""),
+        "next_command": candidate.get("next_command", ""),
+        "expected_impact": candidate.get("expected_impact", ""),
+        "unified_diff": constructed_diff,
+        "scores": {
+            "guard_pattern_fidelity": verdict["guard_pattern_fidelity"],
+            "time_to_value": verdict["time_to_value"],
+            "failure_mode_coverage": verdict["failure_mode_coverage"],
+            "error_craftsmanship": verdict["error_craftsmanship"],
+            "composite": round(composite, 3),
+        },
+        "score_reasons": {
+            "guard_pattern_fidelity": verdict.get("guard_pattern_fidelity_reason", ""),
+            "time_to_value": verdict.get("time_to_value_reason", ""),
+            "failure_mode_coverage": verdict.get("failure_mode_coverage_reason", ""),
+            "error_craftsmanship": verdict.get("error_craftsmanship_reason", ""),
+        },
+        "scope_violation": verdict.get("scope_violation", False),
+        "scope_violation_reason": verdict.get("scope_violation_reason", ""),
+        "anti_pattern_words": verdict.get("anti_pattern_words", []),
+        "validation": validation_result,
+    }
+    append_jsonl(ONBOARD_TARGET_JSONL, survivor)
+    prior = load_best("onboard")
+    if composite > prior.get("composite", 0.0):
+        save_best(
+            "onboard",
+            {
+                "composite": round(composite, 3),
+                "experiment": experiment_i,
+                "ts": survivor["ts"],
+                "candidate": _strip_meta(candidate),
+                "verdict": _strip_meta(verdict),
+                "constructed_diff": constructed_diff,
+            },
+        )
+    return survivor
+
+
+def _onboard_drift_check(experiment_i: int) -> dict[str, Any] | None:
+    best = load_best("onboard")
+    if not best.get("candidate"):
+        return None
+    candidate = best["candidate"]
+    # Re-run validation. For the new insertion_block schema, we rebuild the
+    # diff from anchor+insertion; for legacy survivors (pre-rewrite) we fall
+    # back to the stored unified_diff.
+    wt = None
+    try:
+        wt = git_worktree_add("AR")
+        diff_text = ""
+        if candidate.get("anchor_line") and candidate.get("insertion_lines"):
+            ok, diff_text, err = construct_insertion_diff(
+                wt,
+                candidate.get("target_file", ""),
+                candidate["anchor_line"],
+                candidate["insertion_lines"],
+            )
+            if not ok:
+                return {"drift_check_failed": f"construct_insertion_diff: {err}", "experiment": experiment_i}
+        else:
+            diff_text = best.get("constructed_diff", "") or candidate.get("unified_diff", "")
+        apply_ok, apply_err = apply_diff(wt, diff_text)
+        if not apply_ok:
+            return {"drift_check_failed": f"apply_diff: {apply_err[:200]}", "experiment": experiment_i}
+        validation_result = validate_onboard_worktree(wt)
+        validation_result["constructed_diff"] = diff_text
+    except Exception as e:
+        return {"drift_check_failed": str(e), "experiment": experiment_i}
+    finally:
+        if wt is not None:
+            git_worktree_remove(wt)
+
+    try:
+        verdict = judge.judge_onboard_change(candidate, validation_result)
+    except judge.JudgeError as e:
+        return {"drift_check_failed": str(e), "experiment": experiment_i}
+
+    new_composite = onboard_composite_score(verdict)
+    old_composite = best.get("composite", 0.0)
+    delta = abs(new_composite - old_composite)
+    alarm = delta > ONBOARD_DRIFT_HALT_THRESHOLD
+    info = {
+        "experiment": experiment_i,
+        "old_composite": round(old_composite, 3),
+        "new_composite": round(new_composite, 3),
+        "delta": round(delta, 3),
+        "alarm": alarm,
+    }
+    append_jsonl(prepare.STATE_DIR / "drift.jsonl", info)
+    return info
+
+
+def run_onboard_loop(max_experiments: int, max_wall_s: int | None) -> int:
+    """Run the onboard install-surface improvement loop."""
+    print(f"[runner] onboard track — max {max_experiments} experiments", flush=True)
+    start_ts = time.time()
+    executed = 0
+    promoted = 0
+    failures = 0
+
+    for i in range(max_experiments):
+        if _SHUTDOWN_REQUESTED:
+            print("[runner] shutdown requested — stopping loop", flush=True)
+            break
+        if max_wall_s is not None and (time.time() - start_ts) > max_wall_s:
+            print(f"[runner] wall-clock budget {max_wall_s}s exceeded — stopping", flush=True)
+            break
+
+        executed += 1
+        mode = _rotate_onboard_mode(i)
+        survivors = _load_onboard_survivors(5)
+        current_best = load_best("onboard")
+        current_best_composite = current_best.get("composite", 0.0)
+
+        exp = Experiment(
+            ts=now(),
+            track="onboard",
+            experiment=i,
+            mode=mode,
+        )
+
+        exp_started = time.time()
+        candidate = None
+        verdict = None
+        wt_dir = None
+        try:
+            print(
+                f"[runner] exp {i:03d} mode={mode:14s} best={current_best_composite:.2f}",
+                flush=True,
+            )
+
+            candidate = agent.propose_onboard_change(
+                mode=mode,
+                recent_survivors=survivors,
+            )
+
+            target_file = candidate.get("target_file", "")
+            anchor_line = candidate.get("anchor_line", "")
+            insertion_lines = candidate.get("insertion_lines", []) or []
+
+            # Build the diff deterministically from anchor + insertion. Anchor
+            # must match exactly once; missing/ambiguous anchors fail here,
+            # not at git-apply time.
+            wt_dir = git_worktree_add("AR")
+            build_ok, diff_text, build_err = construct_insertion_diff(
+                wt_dir, target_file, anchor_line, insertion_lines
+            )
+
+            if not build_ok:
+                exp.candidate = _strip_meta(candidate)
+                exp.agent_exit = 0
+                exp.error = f"anchor resolution failed: {build_err[:300]}"
+                exp.eval_breakdown = {
+                    "anchor_ok": False,
+                    "anchor_error": build_err[:500],
+                    "target_file": target_file,
+                    "anchor_line": anchor_line[:120],
+                    "agent_usage": candidate.get("_usage", {}),
+                }
+                print(f"[runner]   ANCHOR FAILED: {build_err[:160]}", flush=True)
+                failures += 1
+                continue
+
+            apply_ok, apply_err = apply_diff(wt_dir, diff_text)
+            if not apply_ok:
+                exp.candidate = _strip_meta(candidate)
+                exp.agent_exit = 0
+                exp.error = f"apply_diff failed: {apply_err[:400]}"
+                exp.eval_breakdown = {
+                    "anchor_ok": True,
+                    "apply_ok": False,
+                    "apply_error": apply_err[:600],
+                    "constructed_diff": diff_text,
+                    "agent_usage": candidate.get("_usage", {}),
+                }
+                print(f"[runner]   APPLY FAILED: {apply_err[:160]}", flush=True)
+                failures += 1
+                continue
+
+            # Scope check + syntax validation.
+            scope_ok, violated = scope_check(wt_dir, ONBOARD_ALLOWED_PATHS)
+            validation_result = validate_onboard_worktree(wt_dir)
+            validation_result["scope_ok"] = scope_ok
+            validation_result["violated_paths"] = violated
+            validation_result["constructed_diff"] = diff_text
+            validation_result["anchor_ok"] = True
+
+            if not validation_result["syntax_ok"]:
+                exp.candidate = _strip_meta(candidate)
+                exp.agent_exit = 0
+                exp.violated_scope = not scope_ok
+                exp.violated_paths = violated
+                exp.error = "syntax_check_failed"
+                exp.eval_breakdown = {
+                    "anchor_ok": True,
+                    "apply_ok": True,
+                    "scope_ok": scope_ok,
+                    "violated_paths": violated,
+                    "syntax_errors": validation_result.get("syntax_errors", []),
+                    "constructed_diff": diff_text,
+                    "agent_usage": candidate.get("_usage", {}),
+                }
+                print(
+                    f"[runner]   SYNTAX FAILED: {validation_result.get('syntax_errors', [])[:2]}",
+                    flush=True,
+                )
+                failures += 1
+                continue
+
+            verdict = judge.judge_onboard_change(
+                _strip_meta(candidate),
+                validation_result,
+            )
+            ok, reason = _onboard_gate_check(verdict)
+
+            exp.candidate = _strip_meta(candidate)
+            exp.score = round(onboard_composite_score(verdict), 3)
+            exp.best_before = round(current_best_composite, 3)
+            exp.promoted = ok
+            exp.gate_reason = reason
+            exp.violated_scope = not scope_ok
+            exp.violated_paths = violated
+            exp.eval_breakdown = {
+                "guard_pattern_fidelity": verdict["guard_pattern_fidelity"],
+                "time_to_value": verdict["time_to_value"],
+                "failure_mode_coverage": verdict["failure_mode_coverage"],
+                "error_craftsmanship": verdict["error_craftsmanship"],
+                "scope_violation": verdict.get("scope_violation", False),
+                "anti_pattern_words": verdict.get("anti_pattern_words", []),
+                "validation": validation_result,
+                "reasons": {
+                    "guard_pattern_fidelity": verdict.get("guard_pattern_fidelity_reason", ""),
+                    "time_to_value": verdict.get("time_to_value_reason", ""),
+                    "failure_mode_coverage": verdict.get("failure_mode_coverage_reason", ""),
+                    "error_craftsmanship": verdict.get("error_craftsmanship_reason", ""),
+                },
+                "agent_usage": candidate.get("_usage", {}),
+                "judge_usage": verdict.get("_usage", {}),
+            }
+            exp.agent_exit = 0
+
+            if ok:
+                _onboard_promote(candidate, verdict, i, validation_result, diff_text)
+                save_patch(
+                    i,
+                    candidate.get("change_id", "onboard"),
+                    diff_text,
+                    track_dir=prepare.ONBOARD_DIR,
+                )
+                promoted += 1
+
+            elapsed = time.time() - exp_started
+            tag = "[PROMOTED]" if ok else "  (discard)"
+            print(
+                f"[runner]   {tag} score={exp.score:.2f} "
+                f"(gpf={verdict['guard_pattern_fidelity']}/ttv={verdict['time_to_value']}/"
+                f"fmc={verdict['failure_mode_coverage']}/ec={verdict['error_craftsmanship']}) "
+                f"scope_ok={scope_ok} t={elapsed:.1f}s — {reason}",
+                flush=True,
+            )
+
+        except Exception as e:
+            failures += 1
+            exp.error = f"{type(e).__name__}: {e}"
+            exp.agent_exit = 1
+            print(f"[runner]   ERROR: {exp.error}", flush=True)
+        finally:
+            if wt_dir is not None:
+                git_worktree_remove(wt_dir)
+            log_experiment(exp)
+
+        if (i + 1) % DRIFT_CHECK_EVERY == 0:
+            info = _onboard_drift_check(i)
+            if info and info.get("alarm"):
+                print(
+                    f"[runner] DRIFT ALARM — current best re-scored from "
+                    f"{info['old_composite']} to {info['new_composite']} "
+                    f"(delta {info['delta']}). Halting.",
+                    flush=True,
+                )
+                break
+            elif info and "drift_check_failed" in info:
+                print(f"[runner] drift check failed: {info['drift_check_failed']}", flush=True)
+
+    total_elapsed = time.time() - start_ts
+    print(
+        f"\n[runner] done. {executed} experiments, {promoted} promoted, "
+        f"{failures} failures, {total_elapsed:.0f}s total",
+        flush=True,
+    )
+    return executed
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(prog="autoresearch.runner")
-    ap.add_argument("--track", choices=["moat", "code", "recall", "context-rot"], default="moat",
-                    help="Which track to run (moat=positioning, code=engine improvements, recall=search quality, context-rot=problem naming).")
+    ap.add_argument("--track", choices=["moat", "code", "recall", "context-rot", "onboard"], default="moat",
+                    help="Which track to run (moat=positioning, code=engine improvements, recall=search quality, context-rot=problem naming, onboard=install surface).")
     ap.add_argument("--max-experiments", type=int, default=80,
                     help="Max experiments before stopping. Default 80.")
     ap.add_argument("--max-wall-s", type=int, default=None,
@@ -1255,6 +1643,8 @@ def main() -> int:
             run_recall_loop(args.max_experiments, args.max_wall_s)
         elif args.track == "context-rot":
             run_context_rot_loop(args.max_experiments, args.max_wall_s)
+        elif args.track == "onboard":
+            run_onboard_loop(args.max_experiments, args.max_wall_s)
     finally:
         prepare.release_lock()
 

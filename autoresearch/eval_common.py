@@ -211,6 +211,112 @@ def validate_worktree(
     }
 
 
+def construct_insertion_diff(
+    wt_dir: Path,
+    target_file: str,
+    anchor_line: str,
+    insertion_lines: list[str],
+    context: int = 3,
+) -> tuple[bool, str, str]:
+    """Deterministically build a unified diff for an insertion-only patch.
+
+    The agent emits (anchor_line, insertion_lines) and the runner composes the diff.
+    This eliminates the diff-fidelity failures that plague LLM-generated patches —
+    line numbers and context are computed from the real file content, not guessed.
+
+    Contract:
+      - anchor_line must appear EXACTLY ONCE in target_file (character-for-character
+        match on a full line, excluding trailing newline). If 0 or >1 matches, we
+        return (False, "", error).
+      - insertion_lines are inserted immediately after the matched anchor line.
+      - The diff uses `context` lines of surrounding context (default 3, git's default).
+
+    Returns (ok, unified_diff, error_message).
+    """
+    path = wt_dir / target_file
+    if not path.exists():
+        return (False, "", f"target_file not found: {target_file}")
+
+    raw = path.read_text()
+    # Split preserving content; trailing newline becomes an empty trailing element.
+    file_lines = raw.split("\n")
+    # If file ends with newline, split gives trailing empty string — drop for indexing.
+    had_trailing_nl = raw.endswith("\n")
+    if had_trailing_nl:
+        file_lines = file_lines[:-1]
+
+    # Find the anchor (exact full-line match).
+    matches = [i for i, line in enumerate(file_lines) if line == anchor_line]
+    if len(matches) == 0:
+        return (False, "", f"anchor_line not found in {target_file}")
+    if len(matches) > 1:
+        return (False, "", f"anchor_line appears {len(matches)} times in {target_file} (must be unique)")
+
+    anchor_idx = matches[0]  # 0-indexed
+    insert_after_line_number = anchor_idx + 1  # 1-indexed line number of anchor
+
+    # Compose the hunk.
+    ctx_before_start = max(0, anchor_idx - context + 1)  # include anchor as last context line
+    ctx_before = file_lines[ctx_before_start : anchor_idx + 1]
+
+    ctx_after_start = anchor_idx + 1
+    ctx_after_end = min(len(file_lines), ctx_after_start + context)
+    ctx_after = file_lines[ctx_after_start:ctx_after_end]
+
+    # Hunk header: `@@ -old_start,old_count +new_start,new_count @@`
+    # old_start is 1-indexed start of the context block on the left side.
+    old_start = ctx_before_start + 1  # 1-indexed
+    old_count = len(ctx_before) + len(ctx_after)
+    new_start = old_start
+    new_count = old_count + len(insertion_lines)
+
+    diff_lines: list[str] = []
+    diff_lines.append(f"--- a/{target_file}")
+    diff_lines.append(f"+++ b/{target_file}")
+    diff_lines.append(f"@@ -{old_start},{old_count} +{new_start},{new_count} @@")
+    for cl in ctx_before:
+        diff_lines.append(" " + cl)
+    for il in insertion_lines:
+        diff_lines.append("+" + il)
+    for cl in ctx_after:
+        diff_lines.append(" " + cl)
+
+    diff_text = "\n".join(diff_lines) + "\n"
+    return (True, diff_text, "")
+
+
+def validate_onboard_worktree(wt_dir: Path) -> dict:
+    """Lightweight syntax check for install-surface patches. Runs `bash -n` on
+    changed .sh files and `node --check` on changed .js files. Skips .md files.
+    Returns a dict compatible in shape with validate_worktree (syntax_ok,
+    syntax_errors) but with import_ok always True (no Python surface)."""
+    changed = git_diff_names(wt_dir)
+    syntax_ok = True
+    syntax_errors: list[str] = []
+
+    for rel in changed:
+        full = wt_dir / rel
+        if not full.exists():
+            continue
+        if rel.endswith(".sh"):
+            r = _run(["bash", "-n", str(full)], cwd=wt_dir, check=False)
+            if r.returncode != 0:
+                syntax_ok = False
+                syntax_errors.append(f"{rel}: {r.stderr.strip()}")
+        elif rel.endswith(".js"):
+            r = _run(["node", "--check", str(full)], cwd=wt_dir, check=False)
+            if r.returncode != 0:
+                syntax_ok = False
+                syntax_errors.append(f"{rel}: {r.stderr.strip()}")
+
+    return {
+        "syntax_ok": syntax_ok,
+        "import_ok": True,
+        "syntax_errors": syntax_errors,
+        "import_error": None,
+    }
+
+
 def save_patch(
     experiment_i: int,
     issue_id: str,

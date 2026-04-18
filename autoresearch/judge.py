@@ -25,6 +25,8 @@ from autoresearch.prepare import (
     CONTEXT_ROT_RUBRIC,
     MOAT_GROUND_TRUTH,
     MOAT_RUBRIC,
+    ONBOARD_GROUND_TRUTH,
+    ONBOARD_RUBRIC,
     RECALL_GROUND_TRUTH,
     RECALL_RUBRIC,
     REPO_ROOT,
@@ -627,3 +629,158 @@ def context_rot_composite_score(verdict: dict[str, Any]) -> float:
 
 def context_rot_min_axis(verdict: dict[str, Any]) -> int:
     return min(verdict["legibility"], verdict["economic"], verdict["inevitability"])
+
+
+# ---------------------------------------------------------------------------
+# Onboard track — silent-failure guards
+# ---------------------------------------------------------------------------
+
+ONBOARD_JUDGE_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "guard_pattern_fidelity": {"type": "integer", "minimum": 1, "maximum": 10},
+        "guard_pattern_fidelity_reason": {"type": "string"},
+        "time_to_value": {"type": "integer", "minimum": 1, "maximum": 10},
+        "time_to_value_reason": {"type": "string"},
+        "failure_mode_coverage": {"type": "integer", "minimum": 1, "maximum": 10},
+        "failure_mode_coverage_reason": {"type": "string"},
+        "error_craftsmanship": {"type": "integer", "minimum": 1, "maximum": 10},
+        "error_craftsmanship_reason": {"type": "string"},
+        "scope_violation": {
+            "type": "boolean",
+            "description": "True iff target_file is outside the allowed list.",
+        },
+        "scope_violation_reason": {"type": "string"},
+        "anti_pattern_words": {"type": "array", "items": {"type": "string"}},
+    },
+    "required": [
+        "guard_pattern_fidelity",
+        "guard_pattern_fidelity_reason",
+        "time_to_value",
+        "time_to_value_reason",
+        "failure_mode_coverage",
+        "failure_mode_coverage_reason",
+        "error_craftsmanship",
+        "error_craftsmanship_reason",
+        "scope_violation",
+        "scope_violation_reason",
+        "anti_pattern_words",
+    ],
+}
+
+_ONBOARD_JUDGE_SYSTEM_CACHE: str | None = None
+
+ONBOARD_SOURCE_FILES = [
+    "installer/setup.sh",
+    "bin/cli.js",
+    "hooks/post-compaction-context.sh",
+    "hooks/pre-compaction-context.sh",
+    "hooks/stop.sh",
+    "hooks/sync-transcript.sh",
+]
+
+
+def build_onboard_judge_system_prompt() -> str:
+    """Cached system prompt for the onboard-track judge."""
+    global _ONBOARD_JUDGE_SYSTEM_CACHE
+    if _ONBOARD_JUDGE_SYSTEM_CACHE is not None:
+        return _ONBOARD_JUDGE_SYSTEM_CACHE
+
+    install_surface = (ONBOARD_GROUND_TRUTH / "install_surface.md").read_text()
+    failure_modes = (ONBOARD_GROUND_TRUTH / "failure_modes.md").read_text()
+    target_metric = (ONBOARD_GROUND_TRUTH / "target_metric.md").read_text()
+    winning_pattern = (ONBOARD_GROUND_TRUTH / "winning_pattern.md").read_text()
+    rubric_text = ONBOARD_RUBRIC.read_text()
+
+    parts: list[str] = []
+    parts.append(
+        "You are the onboard-track judge. Score one proposed silent-failure "
+        "guard against the four-axis rubric: guard_pattern_fidelity, "
+        "time_to_value, failure_mode_coverage, error_craftsmanship. Be strict, "
+        "conservative, and consistent — the same proposal must get the same "
+        "score every time. If unsure between two tiers, pick the lower one.\n\n"
+    )
+    parts.append(f"<winning-pattern>{winning_pattern}</winning-pattern>\n\n")
+    parts.append(f"<install-surface>{install_surface}</install-surface>\n\n")
+    parts.append(f"<failure-modes>{failure_modes}</failure-modes>\n\n")
+    parts.append(f"<target-metric>{target_metric}</target-metric>\n\n")
+    parts.append(f"<rubric>{rubric_text}</rubric>\n\n")
+
+    parts.append("<install-source>\n")
+    for rel_path in ONBOARD_SOURCE_FILES:
+        full = REPO_ROOT / rel_path
+        if not full.exists():
+            continue
+        content = full.read_text()
+        parts.append(f'<file path="{rel_path}">{content}</file>\n')
+    parts.append("</install-source>\n\n")
+
+    parts.append(
+        "## YOUR TASK\n\n"
+        "The user will send you a proposed silent-failure guard as a JSON object "
+        "with fields: change_id, mode, target_file, anchor_line, insertion_lines, "
+        "failure_modes_addressed, description, rationale, error_message, "
+        "next_command, expected_impact. A validation result (including the "
+        "runner-constructed unified_diff) will also be provided.\n\n"
+        "Score against the four axes. Flag scope violations — any target_file "
+        "outside the allowed list caps all axes at 3. Flag anti-pattern words. "
+        "Return structured output matching the schema. Integer scores only — "
+        "no floats, no ranges, no null. Lower tier if unsure.\n\n"
+        "## OUTPUT RULES (CRITICAL FOR LATENCY)\n\n"
+        "Do not write any reasoning, preamble, explanation, or summary before "
+        "or after the structured output. Do not write a markdown header. Each "
+        "*_reason field must be ONE concise sentence (max 25 words). Your "
+        "entire output is the structured object, nothing else."
+    )
+
+    _ONBOARD_JUDGE_SYSTEM_CACHE = "".join(parts)
+    return _ONBOARD_JUDGE_SYSTEM_CACHE
+
+
+def judge_onboard_change(
+    proposal: dict[str, Any],
+    validation_result: dict[str, Any],
+    model: str = DEFAULT_MODEL,
+    timeout_s: int = 180,
+) -> dict[str, Any]:
+    """Score one onboard-track proposal. Returns the verdict dict. Raises JudgeError on failure."""
+    system_prompt = build_onboard_judge_system_prompt()
+    clean_proposal = {k: v for k, v in proposal.items() if not k.startswith("_")}
+
+    user_prompt = (
+        "Score this proposed silent-failure guard. Apply the rubric strictly.\n\n"
+        f"PROPOSAL:\n{json.dumps(clean_proposal, indent=2)}\n\n"
+        f"VALIDATION RESULT:\n{json.dumps(validation_result, indent=2)}"
+    )
+
+    try:
+        verdict = call_structured(
+            system_prompt=system_prompt,
+            user_prompt=user_prompt,
+            schema=ONBOARD_JUDGE_SCHEMA,
+            model=model,
+            timeout_s=timeout_s,
+        )
+    except CLIError as e:
+        raise JudgeError(str(e)) from e
+
+    return verdict
+
+
+def onboard_composite_score(verdict: dict[str, Any]) -> float:
+    """Weighted composite: 0.25*guard_pattern_fidelity + 0.30*time_to_value + 0.25*failure_mode_coverage + 0.20*error_craftsmanship."""
+    return (
+        0.25 * verdict["guard_pattern_fidelity"]
+        + 0.30 * verdict["time_to_value"]
+        + 0.25 * verdict["failure_mode_coverage"]
+        + 0.20 * verdict["error_craftsmanship"]
+    )
+
+
+def onboard_min_axis(verdict: dict[str, Any]) -> int:
+    return min(
+        verdict["guard_pattern_fidelity"],
+        verdict["time_to_value"],
+        verdict["failure_mode_coverage"],
+        verdict["error_craftsmanship"],
+    )

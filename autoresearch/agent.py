@@ -24,6 +24,9 @@ from autoresearch.prepare import (
     MOAT_DIR,
     MOAT_GROUND_TRUTH,
     MOAT_RUBRIC,
+    ONBOARD_DIR,
+    ONBOARD_GROUND_TRUTH,
+    ONBOARD_RUBRIC,
     RECALL_DIR,
     RECALL_GROUND_TRUTH,
     RECALL_RUBRIC,
@@ -656,3 +659,206 @@ def propose_context_rot(
         raise AgentError(str(e)) from e
 
     return candidate
+
+
+# ---------------------------------------------------------------------------
+# Onboard track — silent-failure guards
+# ---------------------------------------------------------------------------
+
+ONBOARD_MODES = (
+    "mcp_verify",
+    "mcp_reachable",
+    "token_shape",
+    "restart_nudge",
+    "hooks_fired",
+    "discover",
+)
+
+ONBOARD_ALLOWED_TARGETS = (
+    "installer/setup.sh",
+    "bin/cli.js",
+    "hooks/post-compaction-context.sh",
+    "hooks/stop.sh",
+    "hooks/sync-transcript.sh",
+)
+
+ONBOARD_CHANGE_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "change_id": {"type": "string", "description": "Short kebab-case identifier"},
+        "mode": {
+            "type": "string",
+            "enum": list(ONBOARD_MODES),
+            "description": "Must match the mode in the user prompt",
+        },
+        "target_file": {
+            "type": "string",
+            "enum": list(ONBOARD_ALLOWED_TARGETS),
+            "description": "One of the allowed install-surface files",
+        },
+        "anchor_line": {
+            "type": "string",
+            "description": "An existing line in target_file that appears EXACTLY ONCE. Insertion goes immediately after this line. Must match character-for-character including leading whitespace.",
+        },
+        "insertion_lines": {
+            "type": "array",
+            "minItems": 1,
+            "maxItems": 8,
+            "items": {"type": "string"},
+            "description": "1-8 lines to insert after anchor_line. No leading '+', no trailing newlines. Preserve indentation.",
+        },
+        "failure_modes_addressed": {
+            "type": "array",
+            "items": {"type": "string"},
+            "description": "Failure-mode IDs from failure_modes.md (e.g. ['F4']) or ['new']",
+        },
+        "description": {
+            "type": "string",
+            "description": "One precise sentence naming what the guard detects",
+        },
+        "rationale": {
+            "type": "string",
+            "description": "1-3 sentences: why this failure mode exists and why the guard closes it",
+        },
+        "error_message": {
+            "type": "string",
+            "description": "The single ERROR line the guard echoes (two-space indent + 'ERROR: ...'). Must name what broke.",
+        },
+        "next_command": {
+            "type": "string",
+            "description": "The exact shell command the user can run to diagnose or fix. Must be universally applicable (no sudo-only, no macOS-only).",
+        },
+        "expected_impact": {
+            "type": "string",
+            "description": "Which users benefit and how the time-to-value metric moves",
+        },
+    },
+    "required": [
+        "change_id",
+        "mode",
+        "target_file",
+        "anchor_line",
+        "insertion_lines",
+        "failure_modes_addressed",
+        "description",
+        "rationale",
+        "error_message",
+        "next_command",
+        "expected_impact",
+    ],
+}
+
+_ONBOARD_AGENT_SYSTEM_CACHE: str | None = None
+
+# Files the agent sees. These are the install surface — mirrors the scope
+# guardrails in program.md / rubric.md.
+ONBOARD_SOURCE_FILES = [
+    "installer/setup.sh",
+    "bin/cli.js",
+    "hooks/post-compaction-context.sh",
+    "hooks/pre-compaction-context.sh",
+    "hooks/stop.sh",
+    "hooks/sync-transcript.sh",
+]
+
+
+def build_onboard_agent_system_prompt() -> str:
+    """Cached system prompt for the onboard track agent: program.md + 4 ground-truth
+    docs (including winning_pattern.md) + rubric + install-surface source. Bit-identical
+    across calls so the CLI-side prompt cache reuses it across all experiments."""
+    global _ONBOARD_AGENT_SYSTEM_CACHE
+    if _ONBOARD_AGENT_SYSTEM_CACHE is not None:
+        return _ONBOARD_AGENT_SYSTEM_CACHE
+
+    program_md = (ONBOARD_DIR / "program.md").read_text()
+    install_surface = (ONBOARD_GROUND_TRUTH / "install_surface.md").read_text()
+    failure_modes = (ONBOARD_GROUND_TRUTH / "failure_modes.md").read_text()
+    target_metric = (ONBOARD_GROUND_TRUTH / "target_metric.md").read_text()
+    winning_pattern = (ONBOARD_GROUND_TRUTH / "winning_pattern.md").read_text()
+    rubric_text = ONBOARD_RUBRIC.read_text()
+
+    parts: list[str] = []
+    parts.append(f"<instructions>{program_md}</instructions>\n\n")
+    parts.append(f"<winning-pattern>{winning_pattern}</winning-pattern>\n\n")
+    parts.append(f"<install-surface>{install_surface}</install-surface>\n\n")
+    parts.append(f"<failure-modes>{failure_modes}</failure-modes>\n\n")
+    parts.append(f"<target-metric>{target_metric}</target-metric>\n\n")
+    parts.append(f"<rubric>{rubric_text}</rubric>\n\n")
+
+    parts.append("<install-source>\n")
+    for rel_path in ONBOARD_SOURCE_FILES:
+        full = REPO_ROOT / rel_path
+        if not full.exists():
+            continue
+        content = full.read_text()
+        parts.append(f'<file path="{rel_path}">{content}</file>\n')
+    parts.append("</install-source>")
+
+    parts.append(
+        "\n\n---\n\n## OUTPUT RULES (CRITICAL FOR LATENCY)\n\n"
+        "Do not write any reasoning, preamble, explanation, or summary before "
+        "or after the structured output. Do not write a markdown header. Each "
+        "text field must be 1-3 sentences max. insertion_lines must be 1-8 "
+        "lines; the anchor_line must appear EXACTLY ONCE in target_file. "
+        "Your entire output is the structured object, nothing else."
+    )
+
+    _ONBOARD_AGENT_SYSTEM_CACHE = "".join(parts)
+    return _ONBOARD_AGENT_SYSTEM_CACHE
+
+
+def _format_onboard_survivors(survivors: list[dict[str, Any]]) -> str:
+    if not survivors:
+        return "(No recent promoted patches yet — propose whatever scores highest. Match the canonical pattern in <winning-pattern>.)"
+    lines = []
+    for i, s in enumerate(survivors[-5:], 1):
+        lines.append(f"Patch {i}: [{s.get('change_id', '?')}] {s.get('description', '?')}")
+        lines.append(f"  target_file: {s.get('target_file', '?')}  mode: {s.get('mode', '?')}")
+        lines.append(f"  failure_modes: {','.join(s.get('failure_modes_addressed', []))}")
+        lines.append(f"  anchor: {(s.get('anchor_line', '') or '')[:80]!r}")
+        scores = s.get("scores", {})
+        lines.append(
+            f"  scored: gpf={scores.get('guard_pattern_fidelity', '?')} "
+            f"ttv={scores.get('time_to_value', '?')} "
+            f"fmc={scores.get('failure_mode_coverage', '?')} "
+            f"ec={scores.get('error_craftsmanship', '?')} "
+            f"composite={scores.get('composite', '?')}"
+        )
+        lines.append("")
+    return "\n".join(lines)
+
+
+def propose_onboard_change(
+    mode: str,
+    recent_survivors: list[dict[str, Any]] | None = None,
+    model: str = DEFAULT_MODEL,
+    timeout_s: int = 240,
+) -> dict[str, Any]:
+    """Generate one silent-failure guard proposal. Returns the structured output dict."""
+    if mode not in ONBOARD_MODES:
+        raise ValueError(f"invalid mode: {mode}, must be one of {ONBOARD_MODES}")
+
+    system_prompt = build_onboard_agent_system_prompt()
+    survivors_text = _format_onboard_survivors(recent_survivors or [])
+
+    user_prompt = (
+        f"Mode: **{mode}**\n\n"
+        "Recent promoted patches (do not repeat the same anchor region):\n"
+        f"{survivors_text}\n\n"
+        "Propose one silent-failure guard matching the canonical pattern in "
+        "<winning-pattern>. Emit anchor_line + insertion_lines (1-8 lines). "
+        "Anchor MUST appear exactly once in target_file."
+    )
+
+    try:
+        proposal = call_structured(
+            system_prompt=system_prompt,
+            user_prompt=user_prompt,
+            schema=ONBOARD_CHANGE_SCHEMA,
+            model=model,
+            timeout_s=timeout_s,
+        )
+    except CLIError as e:
+        raise AgentError(str(e)) from e
+
+    return proposal

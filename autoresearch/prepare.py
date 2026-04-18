@@ -42,6 +42,10 @@ CONTEXT_ROT_DIR = HARNESS_DIR / "tracks" / "context-rot"
 CONTEXT_ROT_GROUND_TRUTH = CONTEXT_ROT_DIR / "ground_truth"
 CONTEXT_ROT_RUBRIC = CONTEXT_ROT_DIR / "rubric.md"
 
+ONBOARD_DIR = HARNESS_DIR / "tracks" / "onboard"
+ONBOARD_GROUND_TRUTH = ONBOARD_DIR / "ground_truth"
+ONBOARD_RUBRIC = ONBOARD_DIR / "rubric.md"
+
 ALLOWED_BRANCH = "AR"
 BLOCKED_BRANCHES = {"main", "master"}
 
@@ -139,6 +143,14 @@ def load_ground_truth_hashes(track: str = "moat") -> dict[str, str]:
             "problem_definition.md",
         ]
         gt_dir = CONTEXT_ROT_GROUND_TRUTH
+    elif track == "onboard":
+        expected_files = [
+            "install_surface.md",
+            "failure_modes.md",
+            "target_metric.md",
+            "winning_pattern.md",
+        ]
+        gt_dir = ONBOARD_GROUND_TRUTH
     else:
         raise SafetyError(f"unknown track: {track}")
     hashes: dict[str, str] = {}
@@ -154,7 +166,12 @@ def load_ground_truth_hashes(track: str = "moat") -> dict[str, str]:
 
 
 def load_rubric_hash(track: str = "moat") -> str:
-    rubric = {"code": CODE_RUBRIC, "recall": RECALL_RUBRIC, "context-rot": CONTEXT_ROT_RUBRIC}.get(track, MOAT_RUBRIC)
+    rubric = {
+        "code": CODE_RUBRIC,
+        "recall": RECALL_RUBRIC,
+        "context-rot": CONTEXT_ROT_RUBRIC,
+        "onboard": ONBOARD_RUBRIC,
+    }.get(track, MOAT_RUBRIC)
     if not rubric.exists():
         raise SafetyError(f"missing {track} rubric: {rubric}")
     return _sha256(rubric)

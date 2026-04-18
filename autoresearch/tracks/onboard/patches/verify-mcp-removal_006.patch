@@ -1,0 +1,15 @@
+--- a/installer/setup.sh
++++ b/installer/setup.sh
+@@ -96,6 +96,12 @@
+ if [ "$EXISTING" -gt 0 ]; then
+   echo "  MCP server 'cctx-memory' already configured — removing old entry"
+   claude mcp remove -s user cctx-memory 2>/dev/null || true
++  # Verify removal succeeded (project-scope entry would still conflict)
++  if claude mcp list 2>/dev/null | grep -q '^cctx-memory:'; then
++    echo "  ERROR: Failed to remove existing MCP server 'cctx-memory'."
++    echo "  Check: claude mcp list — if project-scope, remove it manually."
++    exit 1
++  fi
+ fi
+ 
+ claude mcp add -s user --transport http \
