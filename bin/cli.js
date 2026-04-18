@@ -365,17 +365,32 @@ function pickFolder(items) {
 }
 
 async function cmdStart(rest) {
-  if (!process.stdin.isTTY || !process.stdout.isTTY) {
-    console.error("cctx start requires a TTY.");
-    process.exit(1);
-  }
-
   const registry = readRegistry();
   const cwd = process.cwd();
   const cwdSlug = path.basename(cwd) || "home";
   const cwdRegistered = Object.values(registry).some(
     (e) => e && e.cwd === cwd
   );
+
+  // Non-interactive fallback: if there's no TTY (e.g. invoked by Claude Code
+  // from inside an existing session), just register the current folder and
+  // exit. No picker, no YOLO prompt, no respawn of claude.
+  if (!process.stdin.isTTY || !process.stdout.isTTY || process.env.CLAUDECODE) {
+    if (cwdRegistered) {
+      const existing = slugForCwd(registry, cwd);
+      console.log(`Already registered as "${existing}".`);
+      return;
+    }
+    if (registry[cwdSlug] && registry[cwdSlug].cwd !== cwd) {
+      console.error(`Slug "${cwdSlug}" already maps to ${registry[cwdSlug].cwd}.`);
+      console.error(`Rename one with \`cctx rename\` before adding this folder.`);
+      process.exit(1);
+    }
+    registry[cwdSlug] = { cwd, created_at: new Date().toISOString() };
+    writeRegistry(registry);
+    console.log(`Added "${cwdSlug}" → ${cwd}`);
+    return;
+  }
 
   // Items: every registered folder, then a footer row to add the current
   // folder. The add-row's label changes when cwd is already registered.
@@ -435,8 +450,19 @@ async function cmdStart(rest) {
     process.exit(1);
   }
 
+  process.stdout.write(`\n\x1b[1mSelected:\x1b[0m ${slug}\n\n`);
+  const yolo = await prompt("\x1b[1mYOLO mode?\x1b[0m (--dangerously-skip-permissions) [Y/n] ");
+  const flags = [];
+  if (yolo === "" || /^[Yy]/.test(yolo)) {
+    flags.push("--dangerously-skip-permissions");
+    process.stdout.write("\x1b[33mYOLO mode enabled\x1b[0m\n");
+  } else {
+    process.stdout.write("Standard mode\n");
+  }
+  process.stdout.write(`\nLaunching Claude in \x1b[36m${slug}\x1b[0m...\n\n`);
+
   const claudeBin = resolveClaudeBin();
-  const child = spawn(claudeBin, [], {
+  const child = spawn(claudeBin, flags, {
     stdio: "inherit",
     cwd: launchCwd,
     env: { ...process.env, CCTX_WORKSPACE: slug },
