@@ -69,6 +69,13 @@ fi
 CLAUDE_VERSION=$(claude --version 2>/dev/null || echo "unknown")
 echo "  Found: claude $CLAUDE_VERSION"
 
+# Verify python3 is available (required for JSON parsing and hook configuration)
+if ! command -v python3 &> /dev/null; then
+  echo "  ERROR: python3 not found but required for setup."
+  echo "  Check: command -v python3 — if missing, install python3 for your OS"
+  exit 1
+fi
+
 # --- Step 2: Test API connection ---
 echo "[2/6] Testing API connection..."
 STATS=$(curl -sf --connect-timeout 5 --max-time 10 \
@@ -105,6 +112,13 @@ claude mcp add -s user --transport http \
   cctx-memory "$CCTX_URL/mcp/" \
   --header "Authorization: Bearer $CCTX_TOKEN"
 
+# Verify MCP server was actually registered (claude mcp add exits 0 even on failure)
+if ! claude mcp list 2>/dev/null | grep -q '^cctx-memory:'; then
+  echo "  ERROR: MCP server registration failed."
+  echo "  Check: claude mcp list — if empty, ~/.claude/ may be read-only or Claude Code outdated."
+  exit 1
+fi
+
 echo "  Added MCP server: cctx-memory (user scope)"
 
 # --- Step 4: Install hook scripts ---
@@ -135,6 +149,13 @@ for hook in post-compaction-context.sh pre-compaction-context.sh stop.sh sync-tr
     }
   fi
   chmod +x "$TARGET"
+
+  # Verify downloaded content is actually a shell script (not captive portal HTML)
+  if ! head -1 "$TARGET" 2>/dev/null | grep -q '^#!/bin/bash'; then
+    echo "  ERROR: Hook script corrupted — check if you're behind a captive portal."
+    echo "  Check: head -5 $TARGET"
+    exit 1
+  fi
 done
 
 # --- Step 5: Configure hooks in settings.json ---
