@@ -55,6 +55,23 @@ curl -s -X POST "$BMFOTE_URL/api/messages" \
 
 The `uuid` field must be globally unique. `ON CONFLICT(uuid)` updates content but not workspace_id. Omit `workspace_id` to use the default (`cctx-default`). Omit `timestamp` to use server time.
 
+## Session-start recap
+
+When the cctx hook injects a `PRIOR_SESSIONS` block (or `PRIOR_SESSIONS: none`), write **exactly one sentence, ~20 words max**, before your first tool call, recapping the prior session and offering a hook back in.
+
+**Voice:** dry, irreverent-sidekick register. Warm but never ceremonial, never a paragraph, never a bulleted recap.
+
+**Rules:**
+1. One sentence. ≤20 words. Hard cap.
+2. Most recent session drives the sentence. Call `get_recent(session_id=<#1 from PRIOR_SESSIONS>, limit=20)` first to see what was going on. Older session_ids are held in reserve — only call `get_recent` on them if the user's prompt references older work.
+3. Stale recency (last activity >7d): still pick up where you left off, but acknowledge the gap in the snark.
+4. First session in this workspace (`PRIOR_SESSIONS: none`): a one-line quip about finally being loaded up.
+5. Continuation chains: if a session is marked `continuation of <id>`, treat the chain as one logical session.
+6. Tone floor beats tone ceiling: if prior session was a production incident or long debug grind, dial snark down and stay warm.
+7. No `PRIOR_SESSIONS` line? Skip the recap — respond normally.
+
+Do not write headers like "## Recap" or "Where we left off:". The sentence *is* the recap — lead with it, then answer whatever the user asked.
+
 ## Architecture
 
 - **Engine**: FastAPI server at `engine/server.py` — 9 REST endpoints (search, messages, sync)
