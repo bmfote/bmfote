@@ -368,6 +368,22 @@ async function cmdStart(rest) {
   const registry = readRegistry();
   const cwd = process.cwd();
   const cwdSlug = path.basename(cwd) || "home";
+
+  // Prune entries whose folders no longer exist on disk. Safe because the
+  // registry is just a slug→cwd map; re-running `cctx start` in a restored
+  // folder re-adds it, and server-side messages are keyed by slug.
+  const pruned = [];
+  for (const [slug, entry] of Object.entries(registry)) {
+    if (!entry || !entry.cwd || !fs.existsSync(entry.cwd)) {
+      pruned.push(slug);
+      delete registry[slug];
+    }
+  }
+  if (pruned.length) {
+    writeRegistry(registry);
+    console.log(`Pruned missing folders: ${pruned.join(", ")}`);
+  }
+
   const cwdRegistered = Object.values(registry).some(
     (e) => e && e.cwd === cwd
   );
