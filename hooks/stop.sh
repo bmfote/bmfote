@@ -5,6 +5,11 @@
 #
 # Requires: CCTX_URL and CCTX_TOKEN env vars (set by cctx installer)
 
+# Skip when invoked from a recap-generation `claude -p` subprocess so those
+# meta-recap runs don't get synced to cctx and don't recursively spawn another
+# recap. Set by hooks/stop-recap.sh before invoking `claude -p`.
+[ -n "${CCTX_SKIP_HOOKS:-}" ] && exit 0
+
 # Load config — env vars take precedence, then config file
 CCTX_CONFIG="$HOME/.claude/cctx.env"
 if [ -f "$CCTX_CONFIG" ]; then
@@ -34,4 +39,13 @@ SYNC_SCRIPT="$SCRIPT_DIR/cctx-sync-transcript.sh"
 if [ -f "$SYNC_SCRIPT" ]; then
   # Run sync in foreground (session is ending, we want it to complete)
   "$SYNC_SCRIPT" "$SESSION_ID" "$TRANSCRIPT_PATH"
+fi
+
+# Kick off per-workspace recap in the background — claude -p takes a few
+# seconds, so we detach to keep /exit snappy. The recap is only consumed by
+# the next `cctx start`, which is always well after session-end.
+RECAP_SCRIPT="$SCRIPT_DIR/cctx-stop-recap.sh"
+[ ! -f "$RECAP_SCRIPT" ] && RECAP_SCRIPT="$SCRIPT_DIR/stop-recap.sh"
+if [ -f "$RECAP_SCRIPT" ]; then
+  ( "$RECAP_SCRIPT" "$SESSION_ID" "$TRANSCRIPT_PATH" < /dev/null > /dev/null 2>&1 & )
 fi

@@ -11,6 +11,11 @@
 #
 # Requires: CCTX_URL and CCTX_TOKEN env vars (set by cctx installer)
 
+# Skip when invoked from a recap-generation `claude -p` subprocess so those
+# meta-recap runs don't get synced to cctx and crowd out real sessions in
+# PRIOR_SESSIONS. Set by hooks/stop-recap.sh before invoking `claude -p`.
+[ -n "${CCTX_SKIP_HOOKS:-}" ] && exit 0
+
 # Load config — env vars take precedence, then config file
 CCTX_CONFIG="$HOME/.claude/cctx.env"
 if [ -f "$CCTX_CONFIG" ]; then
@@ -39,26 +44,18 @@ fi
 TRANSCRIPT_PATH=$(echo "$INPUT" | python3 -c "import sys,json; print(json.load(sys.stdin).get('transcript_path',''))" 2>/dev/null || echo "")
 
 # --- Resolve workspace_id ---
-# Priority: CCTX_WORKSPACE env → transcript-path project derivation → cctx-default
-PROJECT=$(echo "$INPUT" | python3 -c "
-import sys, json
-data = json.load(sys.stdin)
-tp = data.get('transcript_path', '')
-parts = tp.split('/projects/')
-if len(parts) > 1:
-    project_dir = parts[1].split('/')[0]
-    if 'github_projects-' in project_dir:
-        print(project_dir.split('github_projects-')[-1])
-    elif project_dir.startswith('-Users-'):
-        print('home')
-    else:
-        print(project_dir)
-else:
-    print('')
-" 2>/dev/null || echo "")
-
-WORKSPACE_ID="${CCTX_WORKSPACE:-${PROJECT:-cctx-default}}"
-export CCTX_WORKSPACE="$WORKSPACE_ID"
+# Prefers installed path, falls back to repo-layout path for dev.
+SCRIPT_DIR_WS="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" 2>/dev/null && pwd 2>/dev/null || echo "")"
+RESOLVER="$SCRIPT_DIR_WS/cctx-lib/resolve-workspace.sh"
+[ ! -f "$RESOLVER" ] && RESOLVER="$SCRIPT_DIR_WS/lib/resolve-workspace.sh"
+if [ -f "$RESOLVER" ]; then
+  # shellcheck source=/dev/null
+  . "$RESOLVER"
+  resolve_workspace "$INPUT"
+else
+  WORKSPACE_ID="${CCTX_WORKSPACE:-cctx-default}"
+  export CCTX_WORKSPACE="$WORKSPACE_ID"
+fi
 
 # --- Sync transcript to cloud (background, non-blocking) ---
 if [ -n "$TRANSCRIPT_PATH" ] && [ -f "$TRANSCRIPT_PATH" ] && [ -n "$SESSION_ID" ]; then

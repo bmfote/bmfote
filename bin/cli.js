@@ -84,6 +84,159 @@ function resolveClaudeBin() {
   catch { return "claude"; }
 }
 
+// ---------- banner ----------
+// Turso-style pre-launch splash with a one-sentence recap of the prior session
+// in this workspace. The recap is generated at session-end by the cctx-stop-recap
+// hook (hooks/stop-recap.sh) and stored at ~/.claude/cctx-recaps/<slug>.txt.
+
+const CCTX_WORDMARK = [
+  " ██████╗ ██████╗████████╗██╗  ██╗",
+  "██╔════╝██╔════╝╚══██╔══╝╚██╗██╔╝",
+  "██║     ██║        ██║    ╚███╔╝ ",
+  "██║     ██║        ██║    ██╔██╗ ",
+  "╚██████╗╚██████╗   ██║   ██╔╝ ██╗",
+  " ╚═════╝ ╚═════╝   ╚═╝   ╚═╝  ╚═╝",
+];
+// Claude warm palette: terracotta → coral → cream, one color per wordmark row.
+const GRADIENT_24BIT = [
+  [201, 100, 66],   // #c96442 Terracotta Brand
+  [217, 119, 87],   // #d97757 Coral Accent
+  [224, 136, 105],  // warm coral
+  [232, 160, 133],  // warm peach
+  [240, 188, 165],  // pale terracotta
+  [243, 207, 188],  // cream peach
+];
+// xterm 256 approximations of the same warm band.
+const GRADIENT_256 = [166, 173, 174, 180, 181, 223];
+
+function colorTier() {
+  if (process.env.NO_COLOR) return "plain";
+  const ct = process.env.COLORTERM || "";
+  if (ct === "truecolor" || ct === "24bit") return "truecolor";
+  if (!process.stdout.isTTY) return "plain";
+  return "256";
+}
+
+function paint(text, row, tier) {
+  if (tier === "plain") return text;
+  if (tier === "truecolor") {
+    const [r, g, b] = GRADIENT_24BIT[row % GRADIENT_24BIT.length];
+    return `\x1b[38;2;${r};${g};${b}m${text}\x1b[0m`;
+  }
+  return `\x1b[38;5;${GRADIENT_256[row % GRADIENT_256.length]}m${text}\x1b[0m`;
+}
+
+function readRecap(slug) {
+  const p = path.join(os.homedir(), ".claude", "cctx-recaps", `${slug}.txt`);
+  try {
+    const txt = fs.readFileSync(p, "utf-8").trim();
+    if (txt) return txt;
+  } catch {}
+  return "Fresh workspace — no prior recap yet.";
+}
+
+function wrap(text, width) {
+  const words = text.split(/\s+/);
+  const lines = [];
+  let line = "";
+  for (const w of words) {
+    if ((line + " " + w).trim().length > width) {
+      if (line) lines.push(line);
+      line = w.length > width ? w.slice(0, width - 1) + "…" : w;
+    } else {
+      line = line ? line + " " + w : w;
+    }
+  }
+  if (line) lines.push(line);
+  return lines;
+}
+
+function padCenter(text, width) {
+  const pad = Math.max(0, width - text.length);
+  const left = Math.floor(pad / 2);
+  return " ".repeat(left) + text + " ".repeat(pad - left);
+}
+function padRight(text, width) {
+  return text + " ".repeat(Math.max(0, width - text.length));
+}
+
+function renderBannerCompact(slug, recap, tier) {
+  const cols = Math.max(40, Math.min(process.stdout.columns || 80, 80));
+  const innerW = cols - 4;
+  const lines = [];
+  lines.push(paint(padCenter("── cctx ──", cols), 2, tier));
+  const recapLines = wrap(recap, innerW).slice(0, 4);
+  for (const rl of recapLines) lines.push("  " + padRight(rl, innerW) + "  ");
+  lines.push(paint(padCenter(`workspace: ${slug}   →   launching claude...`, cols), 4, tier));
+  return lines.join("\n") + "\n";
+}
+
+function renderBannerFull(slug, recap, tier) {
+  const BOX_W = 64;                // outer box width in cells
+  const innerW = BOX_W - 2;        // inside the ║ borders
+  const recapFrameW = innerW - 4;  // inside `  ┌...┐  `
+  const recapTextW = recapFrameW - 6; // inside `│  ...  │` (2 chars padding each side)
+
+  const bot = "╚" + "═".repeat(BOX_W - 2) + "╝";
+  const titleLabel = " cctx ";
+  const titleDashes = BOX_W - 2 - titleLabel.length;
+  const titleLeft = Math.floor(titleDashes / 2);
+  const titleRight = titleDashes - titleLeft;
+  const titleBar = "╔" + "═".repeat(titleLeft) + titleLabel + "═".repeat(titleRight) + "╗";
+  const blank = "║" + " ".repeat(innerW) + "║";
+
+  const wordmarkLines = CCTX_WORDMARK.map((row, i) => {
+    const content = padCenter(row, innerW);
+    return "║" + paint(content, i, tier) + "║";
+  });
+
+  // Recap block: `  ┌─ last session ─┐  ` framed line
+  const label = " last session ";
+  const dashLen = recapFrameW - label.length - 2; // for ┌─...─┐
+  const dashLeft = Math.floor(dashLen / 2);
+  const dashRight = dashLen - dashLeft;
+  const recapTop = "║  ┌" + "─".repeat(dashLeft) + label + "─".repeat(dashRight) + "┐  ║";
+  const recapBot = "║  └" + "─".repeat(recapFrameW - 2) + "┘  ║";
+
+  const recapLines = wrap(recap, recapTextW).slice(0, 4);
+  while (recapLines.length < 2) recapLines.push("");
+  const recapBody = recapLines.map(
+    (rl) => "║  │  " + padRight(rl, recapTextW) + "  │  ║"
+  );
+
+  const footerText = `workspace: ${slug}`;
+  const footerRight = "launching claude...";
+  const footerPadLen = innerW - footerText.length - footerRight.length - 4;
+  const footer =
+    "║  " +
+    paint(footerText, 0, tier) +
+    " ".repeat(Math.max(1, footerPadLen)) +
+    paint(footerRight, 5, tier) +
+    "  ║";
+
+  const out = [
+    titleBar,
+    blank,
+    ...wordmarkLines,
+    blank,
+    recapTop,
+    ...recapBody,
+    recapBot,
+    blank,
+    footer,
+    bot,
+  ];
+  return out.join("\n") + "\n";
+}
+
+function renderBanner(slug) {
+  const cols = process.stdout.columns || 80;
+  const tier = colorTier();
+  const recap = readRecap(slug);
+  const body = cols >= 66 ? renderBannerFull(slug, recap, tier) : renderBannerCompact(slug, recap, tier);
+  process.stdout.write("\n" + body + "\n");
+}
+
 // ---------- project CLAUDE.md writer ----------
 // Writes a marker-delimited block to <cwd>/CLAUDE.md pointing Claude at cctx
 // for persistence in this project. The block is replaced in place on update
@@ -396,7 +549,7 @@ async function cmdStart(rest) {
   } else {
     process.stdout.write("Standard mode\n");
   }
-  process.stdout.write(`\nLaunching Claude in \x1b[36m${slug}\x1b[0m...\n\n`);
+  renderBanner(slug);
 
   const claudeBin = resolveClaudeBin();
   const child = spawn(claudeBin, flags, {
