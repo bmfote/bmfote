@@ -46,6 +46,10 @@ ONBOARD_DIR = HARNESS_DIR / "tracks" / "onboard"
 ONBOARD_GROUND_TRUTH = ONBOARD_DIR / "ground_truth"
 ONBOARD_RUBRIC = ONBOARD_DIR / "rubric.md"
 
+DISTRIBUTION_DIR = HARNESS_DIR / "tracks" / "distribution"
+DISTRIBUTION_GROUND_TRUTH = DISTRIBUTION_DIR / "ground_truth"
+DISTRIBUTION_RUBRIC = DISTRIBUTION_DIR / "rubric.md"
+
 ALLOWED_BRANCH = "AR"
 BLOCKED_BRANCHES = {"main", "master"}
 
@@ -151,6 +155,14 @@ def load_ground_truth_hashes(track: str = "moat") -> dict[str, str]:
             "winning_pattern.md",
         ]
         gt_dir = ONBOARD_GROUND_TRUTH
+    elif track == "distribution":
+        expected_files = [
+            "post_1_minimalism.md",
+            "post_2_cloud_context.md",
+            "post_3_shared_brain.md",
+            "constraints.md",
+        ]
+        gt_dir = DISTRIBUTION_GROUND_TRUTH
     else:
         raise SafetyError(f"unknown track: {track}")
     hashes: dict[str, str] = {}
@@ -171,6 +183,7 @@ def load_rubric_hash(track: str = "moat") -> str:
         "recall": RECALL_RUBRIC,
         "context-rot": CONTEXT_ROT_RUBRIC,
         "onboard": ONBOARD_RUBRIC,
+        "distribution": DISTRIBUTION_RUBRIC,
     }.get(track, MOAT_RUBRIC)
     if not rubric.exists():
         raise SafetyError(f"missing {track} rubric: {rubric}")

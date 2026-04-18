@@ -21,6 +21,9 @@ from autoresearch.prepare import (
     CONTEXT_ROT_DIR,
     CONTEXT_ROT_GROUND_TRUTH,
     CONTEXT_ROT_RUBRIC,
+    DISTRIBUTION_DIR,
+    DISTRIBUTION_GROUND_TRUTH,
+    DISTRIBUTION_RUBRIC,
     MOAT_DIR,
     MOAT_GROUND_TRUTH,
     MOAT_RUBRIC,
@@ -862,3 +865,153 @@ def propose_onboard_change(
         raise AgentError(str(e)) from e
 
     return proposal
+
+
+# ---------------------------------------------------------------------------
+# Distribution track
+# ---------------------------------------------------------------------------
+
+PROPOSE_DISTRIBUTION_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "required": [
+        "mode",
+        "demo_mechanism",
+        "business_model",
+        "pricing",
+        "most_effective_demo",
+        "followership_channel",
+        "precedent",
+        "reasoning",
+    ],
+    "properties": {
+        "mode": {
+            "type": "string",
+            "enum": ["refine", "discover"],
+            "description": "Must match the mode you were told to use in the user prompt.",
+        },
+        "demo_mechanism": {
+            "type": "string",
+            "description": "How someone first tries cctx. Concrete: hosted page URL, install command, walkthrough video, etc. 1-2 sentences.",
+        },
+        "business_model": {
+            "type": "string",
+            "description": "Free text. MIT, open-core, commercial, dual-license, donation-ware, etc. Must argue why the model fits the minimalism thesis. 2-4 sentences.",
+        },
+        "pricing": {
+            "type": "string",
+            "description": "Concrete pricing. '$0 self-host + $9/mo managed' or 'MIT only, no pricing'. No vague 'affordable tiers'.",
+        },
+        "most_effective_demo": {
+            "type": "string",
+            "description": "The aha-moment experience: what the visitor sees, time-to-aha, who exactly it's for. One paragraph.",
+        },
+        "followership_channel": {
+            "type": "string",
+            "description": "Single most effective channel to reach first 500 true believers. Specific: 'Show HN Tuesday 9am EST' not 'HN'. One paragraph.",
+        },
+        "precedent": {
+            "type": "string",
+            "description": "One named comparable (Plausible, htmx, Raycast, Obsidian, SQLite, etc.) + 2 sentences on what specifically transferred to cctx's situation.",
+        },
+        "reasoning": {
+            "type": "string",
+            "description": "3-5 sentences tying all six fields into one coherent argument. This is the internal-coherence signal.",
+        },
+    },
+}
+
+
+_DISTRIBUTION_AGENT_SYSTEM_CACHE: str | None = None
+
+
+def build_distribution_agent_system_prompt() -> str:
+    global _DISTRIBUTION_AGENT_SYSTEM_CACHE
+    if _DISTRIBUTION_AGENT_SYSTEM_CACHE is not None:
+        return _DISTRIBUTION_AGENT_SYSTEM_CACHE
+
+    program_md = (DISTRIBUTION_DIR / "program.md").read_text()
+
+    posts = [
+        ("Post 1 — minimalism philosophy", DISTRIBUTION_GROUND_TRUTH / "post_1_minimalism.md"),
+        ("Post 2 — cloud context category", DISTRIBUTION_GROUND_TRUTH / "post_2_cloud_context.md"),
+        ("Post 3 — shared brain for teams", DISTRIBUTION_GROUND_TRUTH / "post_3_shared_brain.md"),
+        ("Constraints (hard exclusions + comparables list)", DISTRIBUTION_GROUND_TRUTH / "constraints.md"),
+    ]
+
+    parts: list[str] = [program_md, "\n\n---\n\n## GROUND TRUTH\n"]
+    for label, path in posts:
+        parts.append(f"\n### {label}\n\n{path.read_text()}\n")
+    parts.append(
+        "\n\n---\n\n## RUBRIC (the fitness function — the judge will use this)\n\n"
+    )
+    parts.append(DISTRIBUTION_RUBRIC.read_text())
+    parts.append(
+        "\n\n---\n\n## OUTPUT RULES (CRITICAL FOR LATENCY)\n\n"
+        "Do not write any reasoning, preamble, explanation, or summary before "
+        "or after the structured output. Do not restate your thinking. "
+        "Do not write drafts. Each text field except `reasoning` and "
+        "`most_effective_demo`/`followership_channel` is 1-3 sentences. "
+        "`reasoning` is a tight paragraph (3-5 sentences). "
+        "Your entire output is the structured object, nothing else."
+    )
+
+    _DISTRIBUTION_AGENT_SYSTEM_CACHE = "".join(parts)
+    return _DISTRIBUTION_AGENT_SYSTEM_CACHE
+
+
+def _format_distribution_survivors(survivors: list[dict[str, Any]]) -> str:
+    if not survivors:
+        return "(No recent survivors yet — this is an early experiment. Propose whatever scores highest.)"
+    lines = []
+    for i, s in enumerate(survivors[-5:], 1):
+        lines.append(f"Survivor {i}: [{s.get('mode','?')}]")
+        lines.append(f"  business_model: {s.get('business_model','')[:200]}")
+        lines.append(f"  pricing: {s.get('pricing','')[:120]}")
+        lines.append(f"  channel: {s.get('followership_channel','')[:200]}")
+        lines.append(f"  demo: {s.get('most_effective_demo','')[:200]}")
+        lines.append(f"  precedent: {s.get('precedent','')[:200]}")
+        scores = s.get("scores", {})
+        lines.append(
+            f"  scored: feas={scores.get('feasibility','?')} "
+            f"diff={scores.get('differentiation','?')} coh={scores.get('coherence','?')} "
+            f"composite={scores.get('composite','?')}"
+        )
+        lines.append("")
+    return "\n".join(lines)
+
+
+def propose_distribution_plan(
+    mode: str,
+    recent_survivors: list[dict[str, Any]] | None = None,
+    model: str = DEFAULT_MODEL,
+    timeout_s: int = 180,
+) -> dict[str, Any]:
+    """Generate one candidate launch plan. Returns the structured output dict."""
+    if mode not in ("refine", "discover"):
+        raise ValueError(f"invalid mode: {mode}")
+
+    system_prompt = build_distribution_agent_system_prompt()
+    survivors_text = _format_distribution_survivors(recent_survivors or [])
+
+    user_prompt = (
+        f"Mode: **{mode}**\n\n"
+        "Recent survivors (do not repeat these — your plan must be meaningfully different):\n"
+        f"{survivors_text}\n\n"
+        "Propose one coherent launch plan. All six fields must reinforce each "
+        "other. Respect every constraint in constraints.md — no paid ads, solo "
+        "operator, $0-50/mo infra, $5/mo Anthropic cap. Return structured "
+        "output matching the schema."
+    )
+
+    try:
+        candidate = call_structured(
+            system_prompt=system_prompt,
+            user_prompt=user_prompt,
+            schema=PROPOSE_DISTRIBUTION_SCHEMA,
+            model=model,
+            timeout_s=timeout_s,
+        )
+    except CLIError as e:
+        raise AgentError(str(e)) from e
+
+    return candidate

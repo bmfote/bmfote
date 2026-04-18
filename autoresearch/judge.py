@@ -23,6 +23,8 @@ from autoresearch.prepare import (
     CODE_RUBRIC,
     CONTEXT_ROT_GROUND_TRUTH,
     CONTEXT_ROT_RUBRIC,
+    DISTRIBUTION_GROUND_TRUTH,
+    DISTRIBUTION_RUBRIC,
     MOAT_GROUND_TRUTH,
     MOAT_RUBRIC,
     ONBOARD_GROUND_TRUTH,
@@ -784,3 +786,123 @@ def onboard_min_axis(verdict: dict[str, Any]) -> int:
         verdict["failure_mode_coverage"],
         verdict["error_craftsmanship"],
     )
+
+
+# ---------------------------------------------------------------------------
+# Distribution track
+# ---------------------------------------------------------------------------
+
+DISTRIBUTION_JUDGE_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "required": [
+        "feasibility",
+        "feasibility_reason",
+        "differentiation",
+        "differentiation_reason",
+        "coherence",
+        "coherence_reason",
+        "constraint_violation",
+        "constraint_violation_reason",
+        "anti_pattern_words",
+    ],
+    "properties": {
+        "feasibility": {"type": "integer", "minimum": 1, "maximum": 10},
+        "feasibility_reason": {"type": "string"},
+        "differentiation": {"type": "integer", "minimum": 1, "maximum": 10},
+        "differentiation_reason": {"type": "string"},
+        "coherence": {"type": "integer", "minimum": 1, "maximum": 10},
+        "coherence_reason": {"type": "string"},
+        "constraint_violation": {"type": "boolean"},
+        "constraint_violation_reason": {"type": "string"},
+        "anti_pattern_words": {"type": "array", "items": {"type": "string"}},
+    },
+}
+
+_DISTRIBUTION_JUDGE_SYSTEM_CACHE: str | None = None
+
+
+def build_distribution_judge_system_prompt() -> str:
+    global _DISTRIBUTION_JUDGE_SYSTEM_CACHE
+    if _DISTRIBUTION_JUDGE_SYSTEM_CACHE is not None:
+        return _DISTRIBUTION_JUDGE_SYSTEM_CACHE
+
+    posts = [
+        ("Post 1 — minimalism philosophy", DISTRIBUTION_GROUND_TRUTH / "post_1_minimalism.md"),
+        ("Post 2 — cloud context category", DISTRIBUTION_GROUND_TRUTH / "post_2_cloud_context.md"),
+        ("Post 3 — shared brain for teams", DISTRIBUTION_GROUND_TRUTH / "post_3_shared_brain.md"),
+        ("Constraints (hard exclusions + comparables list)", DISTRIBUTION_GROUND_TRUTH / "constraints.md"),
+    ]
+
+    parts: list[str] = []
+    parts.append(
+        "You are the distribution-track judge for the cctx autoresearch harness. "
+        "Your job is to score launch plans against three frozen ground-truth "
+        "documents (3 positioning posts + a constraints file) using a three-axis "
+        "rubric. Be strict, conservative, and consistent — the same candidate "
+        "must get the same score every time. If unsure between two tiers, pick "
+        "the lower one."
+    )
+    parts.append("\n\n## GROUND TRUTH (frozen, never edited)\n")
+    for label, path in posts:
+        parts.append(f"\n### {label}\n\n{path.read_text()}\n")
+    parts.append("\n\n## RUBRIC (frozen, never edited)\n\n")
+    parts.append(DISTRIBUTION_RUBRIC.read_text())
+    parts.append(
+        "\n\n## YOUR TASK\n\n"
+        "The user will send you a candidate launch plan as a JSON object with "
+        "fields: mode, demo_mechanism, business_model, pricing, "
+        "most_effective_demo, followership_channel, precedent, reasoning.\n\n"
+        "Score it against the three axes defined in the rubric. Apply the "
+        "constraint-violation cap rules from the rubric. Flag any anti-pattern "
+        "words found across any text field. Return structured output matching "
+        "the schema. Integer scores only — no floats, no ranges, no null. "
+        "Lower tier if unsure.\n\n"
+        "## OUTPUT RULES (CRITICAL FOR LATENCY)\n\n"
+        "Do not write any reasoning, preamble, explanation, or summary before "
+        "or after the structured output. Do not write a markdown header. Do not "
+        "restate the candidate. The *_reason fields are where reasoning goes, "
+        "and each must be ONE concise sentence (max 25 words). Your entire "
+        "output is the structured object, nothing else."
+    )
+    _DISTRIBUTION_JUDGE_SYSTEM_CACHE = "".join(parts)
+    return _DISTRIBUTION_JUDGE_SYSTEM_CACHE
+
+
+def judge_distribution_candidate(
+    candidate: dict[str, Any],
+    model: str = DEFAULT_MODEL,
+    timeout_s: int = 180,
+) -> dict[str, Any]:
+    """Score one distribution candidate. Returns the verdict dict."""
+    system_prompt = build_distribution_judge_system_prompt()
+    user_prompt = (
+        "Score this candidate launch plan. Apply the rubric strictly. "
+        "Integer scores only, lower tier if unsure, constraint-violation caps apply.\n\n"
+        f"CANDIDATE:\n{json.dumps(candidate, indent=2)}"
+    )
+
+    try:
+        verdict = call_structured(
+            system_prompt=system_prompt,
+            user_prompt=user_prompt,
+            schema=DISTRIBUTION_JUDGE_SCHEMA,
+            model=model,
+            timeout_s=timeout_s,
+        )
+    except CLIError as e:
+        raise JudgeError(str(e)) from e
+
+    return verdict
+
+
+def distribution_composite_score(verdict: dict[str, Any]) -> float:
+    """Weighted composite: 0.35*feasibility + 0.30*differentiation + 0.35*coherence."""
+    return (
+        0.35 * verdict["feasibility"]
+        + 0.30 * verdict["differentiation"]
+        + 0.35 * verdict["coherence"]
+    )
+
+
+def distribution_min_axis(verdict: dict[str, Any]) -> int:
+    return min(verdict["feasibility"], verdict["differentiation"], verdict["coherence"])

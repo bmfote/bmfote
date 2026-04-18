@@ -61,6 +61,8 @@ from autoresearch.judge import (
     composite_score,
     context_rot_composite_score,
     context_rot_min_axis,
+    distribution_composite_score,
+    distribution_min_axis,
     min_axis,
     onboard_composite_score,
     onboard_min_axis,
@@ -73,6 +75,7 @@ CODE_TARGET_JSONL = prepare.CODE_DIR / "target.jsonl"
 RECALL_TARGET_JSONL = prepare.RECALL_DIR / "target.jsonl"
 CONTEXT_ROT_TARGET_JSONL = prepare.CONTEXT_ROT_DIR / "target.jsonl"
 ONBOARD_TARGET_JSONL = prepare.ONBOARD_DIR / "target.jsonl"
+DISTRIBUTION_TARGET_JSONL = prepare.DISTRIBUTION_DIR / "target.jsonl"
 
 # Promotion gate — designed for a "ranked list of good pitches" artifact,
 # not strict monotonic improvement. Once the agent hits the top of the scale,
@@ -1592,10 +1595,198 @@ def run_onboard_loop(max_experiments: int, max_wall_s: int | None) -> int:
     return executed
 
 
+# ---------------------------------------------------------------------------
+# Distribution track
+# ---------------------------------------------------------------------------
+
+DISTRIBUTION_PROMOTION_COMPOSITE_FLOOR = 8.0
+DISTRIBUTION_PROMOTION_MIN_AXIS = 6
+
+
+def _rotate_distribution_mode(i: int) -> str:
+    """Alternate refine/discover. Even = refine, odd = discover."""
+    return "refine" if i % 2 == 0 else "discover"
+
+
+def _load_distribution_survivors(n: int = 5) -> list[dict[str, Any]]:
+    if not DISTRIBUTION_TARGET_JSONL.exists():
+        return []
+    lines = DISTRIBUTION_TARGET_JSONL.read_text().splitlines()
+    survivors: list[dict[str, Any]] = []
+    for line in lines[-n * 2:]:
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            survivors.append(json.loads(line))
+        except json.JSONDecodeError:
+            continue
+    return survivors[-n:]
+
+
+def _distribution_gate_check(verdict: dict[str, Any]) -> tuple[bool, str]:
+    composite = distribution_composite_score(verdict)
+    min_ax = distribution_min_axis(verdict)
+
+    if verdict.get("constraint_violation", False):
+        return (False, "constraint_violation=true")
+
+    if min_ax < DISTRIBUTION_PROMOTION_MIN_AXIS:
+        return (False, f"min_axis {min_ax} < {DISTRIBUTION_PROMOTION_MIN_AXIS}")
+
+    if composite < DISTRIBUTION_PROMOTION_COMPOSITE_FLOOR:
+        return (False, f"composite {composite:.2f} < floor {DISTRIBUTION_PROMOTION_COMPOSITE_FLOOR}")
+
+    return (True, f"composite {composite:.2f} clears floor {DISTRIBUTION_PROMOTION_COMPOSITE_FLOOR}")
+
+
+def _distribution_promote(
+    candidate: dict[str, Any],
+    verdict: dict[str, Any],
+    experiment_i: int,
+) -> dict[str, Any]:
+    composite = distribution_composite_score(verdict)
+    survivor = {
+        "experiment": experiment_i,
+        "ts": now(),
+        "mode": candidate["mode"],
+        "demo_mechanism": candidate["demo_mechanism"],
+        "business_model": candidate["business_model"],
+        "pricing": candidate["pricing"],
+        "most_effective_demo": candidate["most_effective_demo"],
+        "followership_channel": candidate["followership_channel"],
+        "precedent": candidate["precedent"],
+        "reasoning": candidate["reasoning"],
+        "scores": {
+            "feasibility": verdict["feasibility"],
+            "differentiation": verdict["differentiation"],
+            "coherence": verdict["coherence"],
+            "composite": round(composite, 3),
+        },
+        "score_reasons": {
+            "feasibility": verdict.get("feasibility_reason", ""),
+            "differentiation": verdict.get("differentiation_reason", ""),
+            "coherence": verdict.get("coherence_reason", ""),
+        },
+        "constraint_violation": verdict.get("constraint_violation", False),
+        "constraint_violation_reason": verdict.get("constraint_violation_reason", ""),
+        "anti_pattern_words": verdict.get("anti_pattern_words", []),
+    }
+    append_jsonl(DISTRIBUTION_TARGET_JSONL, survivor)
+    prior = load_best("distribution")
+    if composite > prior.get("composite", 0.0):
+        save_best(
+            "distribution",
+            {
+                "composite": round(composite, 3),
+                "experiment": experiment_i,
+                "ts": survivor["ts"],
+                "candidate": _strip_meta(candidate),
+                "verdict": _strip_meta(verdict),
+            },
+        )
+    return survivor
+
+
+def run_distribution_loop(max_experiments: int, max_wall_s: int | None) -> int:
+    """Run the distribution loop. Returns number of experiments executed."""
+    print(f"[runner] distribution track — max {max_experiments} experiments", flush=True)
+    start_ts = time.time()
+    executed = 0
+    promoted = 0
+    failures = 0
+
+    for i in range(max_experiments):
+        if _SHUTDOWN_REQUESTED:
+            print("[runner] shutdown requested — stopping loop", flush=True)
+            break
+        if max_wall_s is not None and (time.time() - start_ts) > max_wall_s:
+            print(f"[runner] wall-clock budget {max_wall_s}s exceeded — stopping", flush=True)
+            break
+
+        executed += 1
+        mode = _rotate_distribution_mode(i)
+        survivors = _load_distribution_survivors(5)
+        current_best = load_best("distribution")
+        current_best_composite = current_best.get("composite", 0.0)
+
+        exp = Experiment(
+            ts=now(),
+            track="distribution",
+            experiment=i,
+            mode=mode,
+        )
+
+        exp_started = time.time()
+        try:
+            print(
+                f"[runner] exp {i:03d} mode={mode:8s} best={current_best_composite:.2f}",
+                flush=True,
+            )
+            candidate = agent.propose_distribution_plan(
+                mode=mode,
+                recent_survivors=survivors,
+            )
+            verdict = judge.judge_distribution_candidate(_strip_meta(candidate))
+            ok, reason = _distribution_gate_check(verdict)
+
+            exp.candidate = _strip_meta(candidate)
+            exp.score = round(distribution_composite_score(verdict), 3)
+            exp.best_before = round(current_best_composite, 3)
+            exp.promoted = ok
+            exp.gate_reason = reason
+            exp.eval_breakdown = {
+                "feasibility": verdict["feasibility"],
+                "differentiation": verdict["differentiation"],
+                "coherence": verdict["coherence"],
+                "constraint_violation": verdict.get("constraint_violation", False),
+                "anti_pattern_words": verdict.get("anti_pattern_words", []),
+                "reasons": {
+                    "feasibility": verdict.get("feasibility_reason", ""),
+                    "differentiation": verdict.get("differentiation_reason", ""),
+                    "coherence": verdict.get("coherence_reason", ""),
+                    "constraint_violation": verdict.get("constraint_violation_reason", ""),
+                },
+                "agent_usage": candidate.get("_usage", {}),
+                "judge_usage": verdict.get("_usage", {}),
+            }
+            exp.agent_exit = 0
+
+            if ok:
+                _distribution_promote(candidate, verdict, i)
+                promoted += 1
+
+            elapsed = time.time() - exp_started
+            tag = "[PROMOTED]" if ok else "  (discard)"
+            print(
+                f"[runner]   {tag} score={exp.score:.2f} "
+                f"(feas={verdict['feasibility']}/diff={verdict['differentiation']}/coh={verdict['coherence']}) "
+                f"cv={'YES' if verdict.get('constraint_violation') else 'no'} "
+                f"t={elapsed:.1f}s — {reason}",
+                flush=True,
+            )
+
+        except Exception as e:
+            failures += 1
+            exp.error = f"{type(e).__name__}: {e}"
+            exp.agent_exit = 1
+            print(f"[runner]   ERROR: {exp.error}", flush=True)
+        finally:
+            log_experiment(exp)
+
+    total_elapsed = time.time() - start_ts
+    print(
+        f"\n[runner] done. {executed} experiments, {promoted} promoted, "
+        f"{failures} failures, {total_elapsed:.0f}s total",
+        flush=True,
+    )
+    return executed
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(prog="autoresearch.runner")
-    ap.add_argument("--track", choices=["moat", "code", "recall", "context-rot", "onboard"], default="moat",
-                    help="Which track to run (moat=positioning, code=engine improvements, recall=search quality, context-rot=problem naming, onboard=install surface).")
+    ap.add_argument("--track", choices=["moat", "code", "recall", "context-rot", "onboard", "distribution"], default="moat",
+                    help="Which track to run (moat=positioning, code=engine improvements, recall=search quality, context-rot=problem naming, onboard=install surface, distribution=launch plans).")
     ap.add_argument("--max-experiments", type=int, default=80,
                     help="Max experiments before stopping. Default 80.")
     ap.add_argument("--max-wall-s", type=int, default=None,
@@ -1645,6 +1836,8 @@ def main() -> int:
             run_context_rot_loop(args.max_experiments, args.max_wall_s)
         elif args.track == "onboard":
             run_onboard_loop(args.max_experiments, args.max_wall_s)
+        elif args.track == "distribution":
+            run_distribution_loop(args.max_experiments, args.max_wall_s)
     finally:
         prepare.release_lock()
 
