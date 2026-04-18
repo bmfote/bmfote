@@ -173,19 +173,16 @@ if names:
     print('Known workspaces: ' + ', '.join(names))
 " 2>/dev/null)
 
-# Fetch last 3 prior sessions for this workspace (excluding current) to power
-# the session-start recap. Only runs when we have a real session_id — without
-# one we can't exclude the current session and would recap ourselves.
+# Fetch last 3 prior sessions for this workspace (excluding current) and emit
+# a PRIOR_SESSIONS block. Claude is expected to call get_recent(session_id=#1)
+# itself to pull the most recent prior session's content as context. Only runs
+# when we have a real session_id — without one we'd inject ourselves.
 #
-# Gated to fire once per session: a marker file at $MARKER_DIR/$SESSION_ID.prior-injected
-# is created on the first UserPromptSubmit and checked on subsequent prompts.
-# This stops the recap rule from re-firing on every turn (the model was getting
-# nagged by PRIOR_SESSIONS mid-conversation and either repeating recaps or
-# silently dropping them).
+# Gated to fire once per session via $MARKER_DIR/$SESSION_ID.prior-injected,
+# created on first UserPromptSubmit. Prevents re-injecting the block on every
+# subsequent turn of the same session.
 PRIOR_SESSIONS_BLOCK=""
-RECAP_CONTENT_BLOCK=""
 PRIOR_MARKER=""
-TOP_SESSION_ID=""
 if [ -n "$SESSION_ID" ]; then
   PRIOR_MARKER="$MARKER_DIR/${SESSION_ID}.prior-injected"
 fi
@@ -193,8 +190,7 @@ if [ -n "$SESSION_ID" ] && [ ! -f "$PRIOR_MARKER" ]; then
   PRIOR_JSON=$(curl -s --connect-timeout 2 --max-time 3 -H "$AUTH" \
     "$CCTX_URL/api/sessions?workspace_id=$WORKSPACE_ID&limit=3&exclude_session_id=$SESSION_ID" 2>/dev/null)
 
-  # Python emits: line 1 = top session_id (or __NONE__); remaining lines = PRIOR_SESSIONS block.
-  PRIOR_PARSED=$(echo "$PRIOR_JSON" | python3 -c "
+  PRIOR_SESSIONS_BLOCK=$(echo "$PRIOR_JSON" | python3 -c "
 import sys, json
 from datetime import datetime, timezone
 
@@ -207,7 +203,6 @@ if not isinstance(sessions, list):
     sessions = []
 
 if not sessions:
-    print('__NONE__')
     print('PRIOR_SESSIONS: none (first time in this workspace)')
     sys.exit(0)
 
@@ -227,9 +222,7 @@ def age(ts):
     except Exception:
         return ts[:10]
 
-top_sid = sessions[0].get('session_id', '') or '__NONE__'
-print(top_sid)
-lines = ['PRIOR_SESSIONS (most recent first — recap content for session #1 is inlined below as RECAP_CONTENT, no tool call required):']
+lines = ['PRIOR_SESSIONS in this workspace (most recent first). Call get_recent(session_id=#1) to load the most recent prior session as context:']
 for i, s in enumerate(sessions, 1):
     sid = s.get('session_id', '?')
     a = age(s.get('last_timestamp'))
@@ -242,39 +235,6 @@ for i, s in enumerate(sessions, 1):
         lines.append(f'  {i}. {sid} — {a}, {n} msgs — \"{topic}\"')
 print('\n'.join(lines))
 " 2>/dev/null)
-
-  TOP_SESSION_ID=$(echo "$PRIOR_PARSED" | head -n1)
-  PRIOR_SESSIONS_BLOCK=$(echo "$PRIOR_PARSED" | tail -n +2)
-
-  # Inline the recap content for session #1 so the model can write the snarky
-  # one-liner without invoking get_recent. get_recent is a deferred MCP tool;
-  # calling it requires a prior ToolSearch turn, which breaks the
-  # "snarky sentence is the first visible text" rule.
-  if [ -n "$TOP_SESSION_ID" ] && [ "$TOP_SESSION_ID" != "__NONE__" ]; then
-    RECENT_FOR_RECAP=$(curl -s --connect-timeout 2 --max-time 4 -H "$AUTH" \
-      "$CCTX_URL/api/recent?hours=168&limit=20&session_id=$TOP_SESSION_ID&workspace_id=$WORKSPACE_ID" 2>/dev/null)
-
-    if [ -n "$RECENT_FOR_RECAP" ] && [ "$RECENT_FOR_RECAP" != "[]" ]; then
-      RECAP_CONTENT_BLOCK=$(echo "$RECENT_FOR_RECAP" | python3 -c "
-import sys, json
-try:
-    msgs = json.load(sys.stdin)
-except Exception:
-    msgs = []
-if not isinstance(msgs, list):
-    msgs = []
-msgs.reverse()
-lines = ['RECAP_CONTENT (last ~20 msgs of session #1, chronological — craft the one-sentence snarky recap from these):']
-for m in msgs:
-    role = m.get('role') or m.get('type') or '?'
-    content = (m.get('content') or '').replace('\n', ' ').strip()[:240]
-    if not content:
-        continue
-    lines.append(f'  [{role}] {content}')
-print('\n'.join(lines))
-" 2>/dev/null)
-    fi
-  fi
 fi
 
 echo "Cloud context available. Current workspace: $WORKSPACE_ID. MCP tools do NOT auto-scope — pass workspace=\"$WORKSPACE_ID\" on search_memory/find_error/remember calls (get_recent with session_id auto-resolves). MCP tools: search_memory, find_error, get_context, get_recent, remember. Shell fallback: source ~/.claude/cctx.env && curl -s -H \"Authorization: Bearer \$CCTX_TOKEN\" \"\$CCTX_URL/api/search?q=QUERY&workspace_id=$WORKSPACE_ID\""
@@ -283,9 +243,6 @@ if [ -n "$KNOWN_WS_LINE" ]; then
 fi
 if [ -n "$PRIOR_SESSIONS_BLOCK" ]; then
   echo "$PRIOR_SESSIONS_BLOCK"
-  if [ -n "$RECAP_CONTENT_BLOCK" ]; then
-    echo "$RECAP_CONTENT_BLOCK"
-  fi
   # Mark that PRIOR_SESSIONS has been injected for this session so subsequent
   # UserPromptSubmit hooks skip it. Touch only after a successful injection so
   # a transient API failure on prompt #1 still gets a retry on prompt #2.

@@ -86,9 +86,9 @@ function resolveClaudeBin() {
 
 // ---------- project CLAUDE.md writer ----------
 // Writes a marker-delimited block to <cwd>/CLAUDE.md pointing Claude at cctx
-// for persistence in this project, plus session-start recap instructions. The
-// block is replaced in place on update (e.g. after a rename or a newer cctx
-// version changing the template). Content outside the markers is never touched.
+// for persistence in this project. The block is replaced in place on update
+// (e.g. after a rename or a newer cctx version changing the template).
+// Content outside the markers is never touched.
 
 const CCTX_MARKER_START = "<!-- cctx:start -->";
 const CCTX_MARKER_END = "<!-- cctx:end -->";
@@ -106,27 +106,9 @@ This project uses **cctx** for cross-session context — **do not write to \`~/.
 
 When recalling prior conversations or saving new context, use cctx — not the markdown auto-memory system described in the global system prompt.
 
-## Session-start recap
+## Session-start context
 
-The cctx hook injects a \`PRIOR_SESSIONS\` block plus a \`RECAP_CONTENT\` block (last ~20 messages of session #1) in the system reminders on the **first** UserPromptSubmit of a session. The hook gates itself with a marker file, so subsequent prompts will not see these blocks. When you see them:
-
-1. Do **not** call \`get_recent\` — the content is already inlined in \`RECAP_CONTENT\`. No tool call of any kind before the recap sentence. (get_recent is a deferred MCP tool; invoking it requires a prior \`ToolSearch\` turn, which burns the first visible message and breaks the rule.)
-2. Output **one sentence, ≤30 words**, as the very first thing the user sees, crafted from \`RECAP_CONTENT\`. This sentence IS the recap.
-3. Then answer the user's actual prompt as you normally would, on the next line(s).
-
-**Voice:** dry, irreverent-sidekick register. Warm but never ceremonial, never a paragraph, never a bulleted recap.
-
-**When to skip:**
-- No \`PRIOR_SESSIONS\` line in the reminders → skip the recap, respond normally. (The hook only injects it once per session; if it's not there, you've already done the recap or this isn't a session start.)
-- \`PRIOR_SESSIONS: none\` (first session in workspace) → output a single one-liner quip about finally being loaded up; same one-sentence cap.
-
-**Tone calibration:**
-- Stale recency (last activity >7d): pick up where you left off, but acknowledge the gap in the snark.
-- Continuation chains (session marked \`continuation of <id>\`): treat the chain as one logical session.
-- Tone floor beats tone ceiling: if prior session was a production incident or long debug grind, dial snark down and stay warm.
-- Focus on what was built/fixed/decided — not session mechanics (don't mention \`/exit\`, message counts, or that a session ended).
-
-Do not write headers like "## Recap" or "Where we left off:". The sentence IS the recap — lead with it, then answer whatever the user asked.
+The cctx hook injects a \`PRIOR_SESSIONS\` list (most recent first) into the system reminders on the **first** UserPromptSubmit of a session. When you see it, call \`get_recent(session_id=<#1>, workspace="${slug}")\` to pull the last ~50 messages of the most recent prior session as background context for the user's prompt. Don't produce an unsolicited recap — just use the context to answer.
 ${CCTX_MARKER_END}`;
 }
 
