@@ -1,0 +1,27 @@
+--- a/engine/server.py
++++ b/engine/server.py
+@@ -147,18 +147,18 @@
+ # QUERY FUNCTIONS — shared by REST endpoints and MCP tools
+ # =============================================================
+ 
+ def _auto_phrase(q: str) -> str:
+-    """Wrap bare multi-token queries in quotes so BM25 ranks positional
+-    phrase matches instead of bag-of-words token density. Callers passing
+-    explicit FTS5 syntax (quotes, booleans, NEAR, prefix*, column filters,
+-    grouping) pass through unchanged. Also makes hyphenated tokens work
+-    without requiring callers to quote them themselves."""
++    """Expand bare queries with OR operator and prefix matching to support
++    topic-based searches while passing through explicit FTS5 syntax unchanged."""
+     if not q or any(c in q for c in '"*():^'):
+         return q
+     tokens = q.split()
+     if any(op in tokens for op in ("AND", "OR", "NOT", "NEAR")):
+         return q
+-    return f'"{q}"'
++    if len(tokens) == 1:
++        return f"{tokens[0]}*" if len(tokens[0]) >= 3 else tokens[0]
++    expanded = [f"{t}*" if len(t) >= 3 else t for t in tokens]
++    return " OR ".join(expanded)
+ 
+ 
+ def query_search(q: str, limit: int = 20, type: str = None, workspace_id: str = None):

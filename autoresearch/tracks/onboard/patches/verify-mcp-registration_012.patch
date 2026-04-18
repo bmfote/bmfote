@@ -1,0 +1,17 @@
+--- a/installer/setup.sh
++++ b/installer/setup.sh
+@@ -94,7 +94,14 @@
+ claude mcp add -s user --transport http \
+   cctx-memory "$CCTX_URL/mcp/" \
+   --header "Authorization: Bearer $CCTX_TOKEN"
+ 
++# Verify MCP server was actually registered (claude mcp add exits 0 even on failure)
++if ! claude mcp list 2>/dev/null | grep -q '^cctx-memory:'; then
++  echo "  ERROR: MCP server registration failed."
++  echo "  Check: claude mcp list — if empty, ~/.claude/ may be read-only or Claude Code outdated."
++  exit 1
++fi
++
+ echo "  Added MCP server: cctx-memory (user scope)"
+ 
+ # --- Step 4: Install hook scripts ---

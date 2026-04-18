@@ -1,0 +1,13 @@
+--- a/engine/server.py
++++ b/engine/server.py
+@@ -149,7 +149,9 @@ def _auto_phrase(q: str) -> str:
+     tokens = q.split()
+     if any(op in tokens for op in ("AND", "OR", "NOT", "NEAR")):
+         return q
+-    return f'"{q}"'
++    if len(tokens) == 1:
++        return f'"{q}"'
++    return f'"{q}" OR NEAR({" ".join(tokens)}, 5) OR ({" OR ".join(tokens)})'
+ 
+ 
+ def query_search(q: str, limit: int = 20, type: str = None, workspace_id: str = None):

@@ -1,0 +1,24 @@
+--- a/engine/server.py
++++ b/engine/server.py
+@@ -294,8 +294,8 @@ def search_messages(
+ ):
+     try:
+         return query_search(q, limit, type, workspace_id)
+-    except Exception as e:
+-        return JSONResponse(status_code=400, content={"error": f"invalid search query: {e}"})
++    except Exception:
++        return JSONResponse(status_code=400, content={"error": "invalid search query"})
+ 
+ 
+ @app.get("/api/similar-error")
+@@ -308,8 +308,8 @@ def similar_error(
+ ):
+     try:
+         return query_similar_error(error, limit, workspace_id)
+-    except Exception as e:
+-        return JSONResponse(status_code=400, content={"error": f"invalid search query: {e}"})
++    except Exception:
++        return JSONResponse(status_code=400, content={"error": "invalid search query"})
+ 
+ 
+ @app.get("/api/message/{uuid}")
