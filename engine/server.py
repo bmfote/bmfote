@@ -346,6 +346,140 @@ def query_recent(hours: int = 24, limit: int = 50, session_id: str = None, works
 
 
 # =============================================================
+# DEFINITION EDITS — AI-proposed canonical-doc edits with provenance
+# =============================================================
+
+def query_propose_edit(
+    uuid: str,
+    workspace_id: str,
+    file_path: str,
+    new_content: str,
+    old_content: str = None,
+    reason: str = None,
+    confidence: float = None,
+    source_session_id: str = None,
+    source_message_uuid: str = None,
+) -> dict:
+    """Insert a proposed edit. ON CONFLICT uuid: no-op (idempotent hook retries)."""
+    conn = get_conn()
+    conn.execute(
+        """
+        INSERT INTO definition_edits (
+            uuid, workspace_id, file_path, old_content, new_content,
+            reason, confidence, source_session_id, source_message_uuid, status
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending')
+        ON CONFLICT(uuid) DO NOTHING
+        """,
+        (
+            uuid, workspace_id, file_path, old_content, new_content,
+            reason, confidence, source_session_id, source_message_uuid,
+        ),
+    )
+    conn.commit()
+    if not is_remote_db():
+        conn.sync()
+    return {"uuid": uuid, "status": "pending", "workspace_id": workspace_id}
+
+
+def query_pending_edits(workspace_id: str = None, limit: int = 50) -> list[dict]:
+    """List pending review-queue entries for a workspace, oldest first."""
+    workspace_id = workspace_id or DEFAULT_WORKSPACE
+    conn = get_conn()
+    return rows_to_dicts(conn.execute(
+        """
+        SELECT uuid, workspace_id, file_path, old_content, new_content,
+               reason, confidence, source_session_id, source_message_uuid,
+               status, created_at
+          FROM definition_edits
+         WHERE workspace_id = ? AND status = 'pending'
+         ORDER BY created_at ASC
+         LIMIT ?
+        """,
+        (workspace_id, limit),
+    ))
+
+
+def query_pending_count(workspace_id: str = None) -> int:
+    """Fast count of pending edits — used by session-start banner."""
+    workspace_id = workspace_id or DEFAULT_WORKSPACE
+    conn = get_conn()
+    row = conn.execute(
+        "SELECT COUNT(*) FROM definition_edits WHERE workspace_id = ? AND status = 'pending'",
+        (workspace_id,),
+    ).fetchone()
+    return row[0] if row else 0
+
+
+def _set_status(edit_uuid: str, workspace_id: str, status: str) -> dict | None:
+    """Shared guts for apply/reject. Returns the row after update, or None if
+    not found / already-reviewed. Workspace scoping prevents cross-workspace
+    mutation even with a guessed UUID."""
+    conn = get_conn()
+    target = row_to_dict(conn.execute(
+        """
+        SELECT uuid, workspace_id, file_path, old_content, new_content,
+               reason, confidence, source_session_id, source_message_uuid,
+               status, created_at, reviewed_at
+          FROM definition_edits
+         WHERE uuid = ? AND workspace_id = ?
+        """,
+        (edit_uuid, workspace_id or DEFAULT_WORKSPACE),
+    ))
+    if target is None:
+        return None
+    if target["status"] != "pending":
+        # Already reviewed — idempotent: return current state
+        return target
+
+    now = datetime.now(timezone.utc).isoformat()
+    conn.execute(
+        "UPDATE definition_edits SET status = ?, reviewed_at = ? WHERE uuid = ? AND workspace_id = ?",
+        (status, now, edit_uuid, workspace_id or DEFAULT_WORKSPACE),
+    )
+    conn.commit()
+    if not is_remote_db():
+        conn.sync()
+
+    target["status"] = status
+    target["reviewed_at"] = now
+    return target
+
+
+def query_apply_edit(edit_uuid: str, workspace_id: str = None) -> dict | None:
+    """Mark edit approved. Returns the full row so the CLI can write the
+    new_content to disk without a second fetch."""
+    return _set_status(edit_uuid, workspace_id, "approved")
+
+
+def query_reject_edit(edit_uuid: str, workspace_id: str = None) -> dict | None:
+    return _set_status(edit_uuid, workspace_id, "rejected")
+
+
+def query_edit_history(
+    workspace_id: str = None,
+    file_path: str = None,
+    limit: int = 50,
+) -> list[dict]:
+    """Audit trail. All statuses unless filtered. Most-recent first."""
+    workspace_id = workspace_id or DEFAULT_WORKSPACE
+    conn = get_conn()
+    sql = """
+        SELECT uuid, workspace_id, file_path, old_content, new_content,
+               reason, confidence, source_session_id, source_message_uuid,
+               status, created_at, reviewed_at
+          FROM definition_edits
+         WHERE workspace_id = ?
+    """
+    params: list = [workspace_id]
+    if file_path:
+        sql += " AND file_path = ?"
+        params.append(file_path)
+    sql += " ORDER BY created_at DESC LIMIT ?"
+    params.append(limit)
+    return rows_to_dicts(conn.execute(sql, tuple(params)))
+
+
+# =============================================================
 # CONVERSATION SEARCH ENDPOINTS
 # =============================================================
 
@@ -767,6 +901,96 @@ def backfill_workspace(request: Request, r: BackfillReq | None = None):
     ))
 
     return {"status": "ok", "from": src, "before": before, "after": after}
+
+
+# =============================================================
+# DEFINITION EDITS — endpoints
+# =============================================================
+
+class DefinitionEditCreate(BaseModel):
+    uuid: str = Field(max_length=64)
+    workspace_id: str = Field(max_length=200)
+    file_path: str = Field(max_length=500)
+    new_content: str = Field(max_length=100000)
+    old_content: Optional[str] = Field(default=None, max_length=100000)
+    reason: Optional[str] = Field(default=None, max_length=2000)
+    confidence: Optional[float] = Field(default=None, ge=0.0, le=1.0)
+    source_session_id: str = Field(max_length=64)
+    source_message_uuid: Optional[str] = Field(default=None, max_length=64)
+
+
+@app.post("/api/definitions/propose")
+@limiter.limit("120/minute")
+def propose_definition_edit(request: Request, edit: DefinitionEditCreate):
+    """Queue an AI-proposed edit for human review. Idempotent on uuid."""
+    return query_propose_edit(
+        uuid=edit.uuid,
+        workspace_id=edit.workspace_id,
+        file_path=edit.file_path,
+        new_content=edit.new_content,
+        old_content=edit.old_content,
+        reason=edit.reason,
+        confidence=edit.confidence,
+        source_session_id=edit.source_session_id,
+        source_message_uuid=edit.source_message_uuid,
+    )
+
+
+@app.get("/api/definitions/pending")
+@limiter.limit("60/minute")
+def list_pending(
+    request: Request,
+    workspace_id: str = Query(default=None),
+    limit: int = Query(default=50, le=200),
+):
+    return query_pending_edits(workspace_id, limit)
+
+
+@app.get("/api/definitions/pending-count")
+@limiter.limit("120/minute")
+def pending_count(
+    request: Request,
+    workspace_id: str = Query(default=None),
+):
+    """Fast count for the session-start banner — avoids shipping full content."""
+    return {"workspace_id": workspace_id or DEFAULT_WORKSPACE, "count": query_pending_count(workspace_id)}
+
+
+@app.post("/api/definitions/{edit_uuid}/apply")
+@limiter.limit("60/minute")
+def apply_edit(
+    request: Request,
+    edit_uuid: str,
+    workspace_id: str = Query(default=None),
+):
+    result = query_apply_edit(edit_uuid, workspace_id)
+    if result is None:
+        return JSONResponse(status_code=404, content={"error": "edit not found"})
+    return result
+
+
+@app.post("/api/definitions/{edit_uuid}/reject")
+@limiter.limit("60/minute")
+def reject_edit(
+    request: Request,
+    edit_uuid: str,
+    workspace_id: str = Query(default=None),
+):
+    result = query_reject_edit(edit_uuid, workspace_id)
+    if result is None:
+        return JSONResponse(status_code=404, content={"error": "edit not found"})
+    return result
+
+
+@app.get("/api/definitions/history")
+@limiter.limit("60/minute")
+def edit_history(
+    request: Request,
+    workspace_id: str = Query(default=None),
+    file_path: str = Query(default=None),
+    limit: int = Query(default=50, le=200),
+):
+    return query_edit_history(workspace_id, file_path, limit)
 
 
 if __name__ == "__main__":

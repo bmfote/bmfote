@@ -567,6 +567,272 @@ function slugForCwd(registry, cwd) {
   return null;
 }
 
+// ---------- definitions: track / untrack / tracked / review ----------
+
+function resolveCurrentWorkspace() {
+  if (process.env.CCTX_WORKSPACE) return process.env.CCTX_WORKSPACE;
+  const cwd = process.cwd();
+  const reg = readRegistry();
+  const slug = slugForCwd(reg, cwd);
+  if (slug) return slug;
+  return "cctx-default";
+}
+
+function trackedManifestPath(cwd) {
+  return path.join(cwd || process.cwd(), ".cctx", "tracked.txt");
+}
+
+function readTrackedManifest(cwd) {
+  const p = trackedManifestPath(cwd);
+  try {
+    if (!fs.existsSync(p)) return [];
+    return fs.readFileSync(p, "utf-8")
+      .split("\n")
+      .map((l) => l.trim())
+      .filter((l) => l && !l.startsWith("#"));
+  } catch { return []; }
+}
+
+function writeTrackedManifest(cwd, entries) {
+  const p = trackedManifestPath(cwd);
+  fs.mkdirSync(path.dirname(p), { recursive: true });
+  const body = entries.length
+    ? entries.join("\n") + "\n"
+    : "";
+  fs.writeFileSync(p, body);
+}
+
+async function cmdTrack(rest) {
+  const file = rest[0];
+  if (!file) {
+    console.error("Usage: cctx track <file-path-relative-to-project-root>");
+    process.exit(1);
+  }
+  const cwd = process.cwd();
+  const abs = path.join(cwd, file);
+  if (!fs.existsSync(abs)) {
+    // Permitted — the file may not exist yet; the proposer handles first-writes
+    console.log(`Note: ${file} does not exist yet. Tracking anyway — proposer will offer first-writes once you create it.`);
+  }
+  const list = readTrackedManifest(cwd);
+  if (list.includes(file)) {
+    console.log(`Already tracked: ${file}`);
+    return;
+  }
+  list.push(file);
+  writeTrackedManifest(cwd, list);
+  console.log(`✓ Tracked: ${file}  (${list.length} total)`);
+}
+
+async function cmdUntrack(rest) {
+  const file = rest[0];
+  if (!file) {
+    console.error("Usage: cctx untrack <file-path-relative-to-project-root>");
+    process.exit(1);
+  }
+  const cwd = process.cwd();
+  const list = readTrackedManifest(cwd);
+  const next = list.filter((f) => f !== file);
+  if (next.length === list.length) {
+    console.log(`Not in manifest: ${file}`);
+    return;
+  }
+  writeTrackedManifest(cwd, next);
+  console.log(`✓ Untracked: ${file}  (${next.length} remaining)`);
+}
+
+async function cmdTracked() {
+  const cwd = process.cwd();
+  const list = readTrackedManifest(cwd);
+  if (!list.length) {
+    console.log(`No tracked definition files in ${cwd}.`);
+    console.log(`Add one: cctx track icp.md`);
+    return;
+  }
+  console.log(`Tracked in ${cwd}:`);
+  for (const f of list) {
+    const abs = path.join(cwd, f);
+    const exists = fs.existsSync(abs) ? "" : "  (file does not exist yet)";
+    console.log(`  - ${f}${exists}`);
+  }
+}
+
+// ---------- review (interactive diff viewer) ----------
+
+const COLOR_RED = "\x1b[31m";
+const COLOR_GREEN = "\x1b[32m";
+const COLOR_DIM = "\x1b[2m";
+const COLOR_BOLD = "\x1b[1m";
+const COLOR_RESET = "\x1b[0m";
+
+function colorize(on) {
+  return on && process.stdout.isTTY && !process.env.NO_COLOR;
+}
+
+function renderDiff(oldText, newText, useColor) {
+  // Simple line-oriented diff rendering. Not an LCS diff — we just tag each
+  // old line as a deletion and each new line as an addition. For the typical
+  // 1-3 sentence surgical edit, this reads cleanly.
+  const lines = [];
+  const oldLines = (oldText || "").split("\n");
+  const newLines = (newText || "").split("\n");
+  if (oldText) {
+    for (const l of oldLines) {
+      const s = `- ${l}`;
+      lines.push(useColor ? `${COLOR_RED}${s}${COLOR_RESET}` : s);
+    }
+  }
+  for (const l of newLines) {
+    const s = `+ ${l}`;
+    lines.push(useColor ? `${COLOR_GREEN}${s}${COLOR_RESET}` : s);
+  }
+  return lines.join("\n");
+}
+
+function readSingleKey() {
+  return new Promise((resolve) => {
+    const stdin = process.stdin;
+    const wasRaw = stdin.isRaw;
+    if (stdin.isTTY) stdin.setRawMode(true);
+    stdin.resume();
+    stdin.setEncoding("utf-8");
+    const onData = (chunk) => {
+      stdin.removeListener("data", onData);
+      if (stdin.isTTY) stdin.setRawMode(wasRaw);
+      stdin.pause();
+      resolve(chunk.toString());
+    };
+    stdin.on("data", onData);
+  });
+}
+
+function applyEditToDisk(cwd, filePath, newContent) {
+  const abs = path.join(cwd, filePath);
+  fs.mkdirSync(path.dirname(abs), { recursive: true });
+  fs.writeFileSync(abs, newContent);
+}
+
+async function openInEditor(initialText) {
+  const editor = process.env.EDITOR || process.env.VISUAL || "vi";
+  const tmp = path.join(os.tmpdir(), `cctx-edit-${Date.now()}.md`);
+  fs.writeFileSync(tmp, initialText);
+  return new Promise((resolve) => {
+    const child = spawn(editor, [tmp], { stdio: "inherit" });
+    child.on("exit", () => {
+      let content = initialText;
+      try { content = fs.readFileSync(tmp, "utf-8"); } catch {}
+      try { fs.unlinkSync(tmp); } catch {}
+      resolve(content);
+    });
+  });
+}
+
+async function fetchSessionPreview(sessionId) {
+  try {
+    const res = await api.get(`/api/recent?session_id=${encodeURIComponent(sessionId)}&limit=10`);
+    if (!Array.isArray(res) || res.length === 0) return null;
+    // API returns newest-first — reverse for chronological reading
+    const lines = res.slice().reverse().map((m) => {
+      const role = m.type || m.role || "?";
+      const content = (m.content || "").replace(/\n/g, " ").slice(0, 200);
+      return `  [${role}] ${content}`;
+    });
+    return lines.join("\n");
+  } catch {
+    return null;
+  }
+}
+
+async function cmdReview() {
+  const cwd = process.cwd();
+  const workspace = resolveCurrentWorkspace();
+  const useColor = colorize(true);
+
+  const pending = await api.get(`/api/definitions/pending?workspace_id=${encodeURIComponent(workspace)}&limit=50`);
+  if (!Array.isArray(pending) || pending.length === 0) {
+    console.log(`No pending definition edits in workspace '${workspace}'.`);
+    return;
+  }
+
+  console.log(`${COLOR_BOLD}${pending.length} pending edit(s) in ${workspace}${COLOR_RESET}\n`);
+
+  let approved = 0, rejected = 0, skipped = 0, edited = 0;
+
+  for (let i = 0; i < pending.length; i++) {
+    const e = pending[i];
+    console.log(`${COLOR_BOLD}[${i + 1}/${pending.length}] ${e.file_path}${COLOR_RESET}`);
+    const conf = e.confidence != null ? `conf=${e.confidence.toFixed(2)}` : "conf=?";
+    const session = `session=${e.source_session_id}`;
+    console.log(`${COLOR_DIM}${conf}  ${session}  created=${e.created_at}${COLOR_RESET}`);
+    if (e.reason) {
+      console.log(`${COLOR_DIM}reason:${COLOR_RESET} ${e.reason}`);
+    }
+    console.log("");
+    console.log(renderDiff(e.old_content || "", e.new_content, useColor));
+    console.log("");
+    process.stdout.write(`${COLOR_BOLD}[y]${COLOR_RESET} accept   ${COLOR_BOLD}[n]${COLOR_RESET} reject   ${COLOR_BOLD}[e]${COLOR_RESET} edit   ${COLOR_BOLD}[s]${COLOR_RESET} skip   ${COLOR_BOLD}[o]${COLOR_RESET} open session   ${COLOR_BOLD}[q]${COLOR_RESET} quit  › `);
+    let decided = false;
+    while (!decided) {
+      const key = (await readSingleKey()).toLowerCase();
+      if (key === "y") {
+        try {
+          const result = await api.post(`/api/definitions/${e.uuid}/apply?workspace_id=${encodeURIComponent(workspace)}`);
+          applyEditToDisk(cwd, e.file_path, result.new_content);
+          console.log(`\n${COLOR_GREEN}✓ accepted — ${e.file_path} written${COLOR_RESET}\n`);
+          approved++;
+        } catch (err) {
+          console.log(`\n${COLOR_RED}✗ apply failed: ${err.message}${COLOR_RESET}\n`);
+        }
+        decided = true;
+      } else if (key === "n") {
+        try {
+          await api.post(`/api/definitions/${e.uuid}/reject?workspace_id=${encodeURIComponent(workspace)}`);
+          console.log(`\n${COLOR_DIM}rejected${COLOR_RESET}\n`);
+          rejected++;
+        } catch (err) {
+          console.log(`\n${COLOR_RED}✗ reject failed: ${err.message}${COLOR_RESET}\n`);
+        }
+        decided = true;
+      } else if (key === "e") {
+        const edited_text = await openInEditor(e.new_content);
+        try {
+          // Apply-with-edited-content: mark approved first, then overwrite disk
+          await api.post(`/api/definitions/${e.uuid}/apply?workspace_id=${encodeURIComponent(workspace)}`);
+          applyEditToDisk(cwd, e.file_path, edited_text);
+          console.log(`\n${COLOR_GREEN}✓ accepted (edited) — ${e.file_path} written${COLOR_RESET}\n`);
+          edited++;
+        } catch (err) {
+          console.log(`\n${COLOR_RED}✗ apply failed: ${err.message}${COLOR_RESET}\n`);
+        }
+        decided = true;
+      } else if (key === "s") {
+        console.log(`\n${COLOR_DIM}skipped (stays in queue)${COLOR_RESET}\n`);
+        skipped++;
+        decided = true;
+      } else if (key === "o") {
+        console.log("\n");
+        const preview = await fetchSessionPreview(e.source_session_id);
+        if (preview) {
+          console.log(`${COLOR_DIM}session ${e.source_session_id} (last 10 messages):${COLOR_RESET}`);
+          console.log(preview);
+        } else {
+          console.log(`${COLOR_DIM}(no session content found for ${e.source_session_id})${COLOR_RESET}`);
+        }
+        console.log("");
+        process.stdout.write(`${COLOR_BOLD}[y]${COLOR_RESET} accept   ${COLOR_BOLD}[n]${COLOR_RESET} reject   ${COLOR_BOLD}[e]${COLOR_RESET} edit   ${COLOR_BOLD}[s]${COLOR_RESET} skip   ${COLOR_BOLD}[q]${COLOR_RESET} quit  › `);
+        // Loop back for the actual decision
+      } else if (key === "q" || key === "\x03") {
+        console.log("\n");
+        console.log(`Done. accepted=${approved}  edited=${edited}  rejected=${rejected}  skipped=${skipped + (pending.length - i - 1)}`);
+        return;
+      }
+      // Anything else: ignore and re-prompt (no output change)
+    }
+  }
+
+  console.log(`Done. accepted=${approved}  edited=${edited}  rejected=${rejected}  skipped=${skipped}`);
+}
+
 // ---------- rename ----------
 
 async function cmdRename(rest) {
@@ -601,6 +867,11 @@ Commands:
   cctx start                                       Arrow-key picker over workspaces (folders)
   cctx rename <old> <new>                          Rename a workspace (rewrites all rows)
 
+  cctx track <file>                                Track a canonical definition file (e.g. icp.md)
+  cctx untrack <file>                              Stop tracking a file
+  cctx tracked                                     List tracked files in the current project
+  cctx review                                      Review AI-proposed edits to tracked files
+
 Backend: https://github.com/bmfote/bmfote#host-your-own-server
 `);
 }
@@ -614,10 +885,14 @@ Backend: https://github.com/bmfote/bmfote#host-your-own-server
       return;
     }
     switch (command) {
-      case "setup":  return await cmdSetup(args.slice(1));
-      case "status": return await cmdStatus();
-      case "start":  return await cmdStart(args.slice(1));
-      case "rename": return await cmdRename(args.slice(1));
+      case "setup":   return await cmdSetup(args.slice(1));
+      case "status":  return await cmdStatus();
+      case "start":   return await cmdStart(args.slice(1));
+      case "rename":  return await cmdRename(args.slice(1));
+      case "track":   return await cmdTrack(args.slice(1));
+      case "untrack": return await cmdUntrack(args.slice(1));
+      case "tracked": return await cmdTracked();
+      case "review":  return await cmdReview();
       default:
         console.error(`Unknown command: ${command}`);
         console.error('Run "cctx --help" for usage.');

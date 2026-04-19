@@ -26,6 +26,7 @@ fi
 INPUT=$(cat)
 SESSION_ID=$(echo "$INPUT" | python3 -c "import sys,json; print(json.load(sys.stdin).get('session_id',''))" 2>/dev/null || echo "")
 TRANSCRIPT_PATH=$(echo "$INPUT" | python3 -c "import sys,json; print(json.load(sys.stdin).get('transcript_path',''))" 2>/dev/null || echo "")
+CWD=$(echo "$INPUT" | python3 -c "import sys,json; print(json.load(sys.stdin).get('cwd',''))" 2>/dev/null || echo "")
 
 if [ -z "$SESSION_ID" ] || [ -z "$TRANSCRIPT_PATH" ]; then
   exit 0
@@ -48,4 +49,12 @@ RECAP_SCRIPT="$SCRIPT_DIR/cctx-stop-recap.sh"
 [ ! -f "$RECAP_SCRIPT" ] && RECAP_SCRIPT="$SCRIPT_DIR/stop-recap.sh"
 if [ -f "$RECAP_SCRIPT" ]; then
   ( "$RECAP_SCRIPT" "$SESSION_ID" "$TRANSCRIPT_PATH" < /dev/null > /dev/null 2>&1 & )
+fi
+
+# Kick off the definitions proposer in the background. No-op unless the
+# project has a .cctx/tracked.txt manifest, so most sessions pay zero cost.
+DEF_SCRIPT="$SCRIPT_DIR/cctx-stop-definitions.sh"
+[ ! -f "$DEF_SCRIPT" ] && DEF_SCRIPT="$SCRIPT_DIR/stop-definitions.sh"
+if [ -f "$DEF_SCRIPT" ] && [ -n "$CWD" ]; then
+  ( "$DEF_SCRIPT" "$SESSION_ID" "$TRANSCRIPT_PATH" "$CWD" < /dev/null > /dev/null 2>&1 & )
 fi
