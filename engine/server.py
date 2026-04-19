@@ -3,6 +3,7 @@
 
 import hmac
 import logging
+import math
 import os
 import time
 from contextlib import asynccontextmanager
@@ -165,8 +166,39 @@ def _auto_phrase(q: str) -> str:
     return f'"{q}" OR NEAR({" ".join(safe)}, 5) OR ({" OR ".join(safe)})'
 
 
+# Recency decay: half-life 14 days matches the typical 2-week dev horizon.
+# BM25 is negative (more-negative = better), so multiplying by exp(-age/14)
+# pushes old rows toward zero (= worse) under ORDER BY rank ASC. Floor at 0.1
+# so strong ancient matches still surface.
+DECAY_HALF_LIFE_DAYS = 14.0
+DECAY_FLOOR = 0.1
+
+
+def _apply_recency_decay(rows: list, now: datetime = None) -> list:
+    """Re-score rows by bm25 * exp(-age_days / half_life), floored. Returns
+    rows sorted ascending by the new rank (most-relevant first)."""
+    if not rows:
+        return rows
+    now = now or datetime.now(timezone.utc)
+    for r in rows:
+        ts_raw = r.get("timestamp")
+        if not ts_raw:
+            continue
+        try:
+            ts = datetime.fromisoformat(ts_raw.replace("Z", "+00:00"))
+            age_days = max(0.0, (now - ts).total_seconds() / 86400.0)
+            decay = max(DECAY_FLOOR, math.exp(-age_days / DECAY_HALF_LIFE_DAYS))
+            r["rank"] = r["rank"] * decay
+        except (ValueError, AttributeError):
+            continue
+    rows.sort(key=lambda r: r.get("rank", 0))
+    return rows
+
+
 def query_search(q: str, limit: int = 20, type: str = None, workspace_id: str = None):
-    """Full-text search over conversation messages with BM25 ranking."""
+    """Full-text search over conversation messages with BM25 ranking and
+    recency decay. Over-fetches 3x so decay can promote slightly-weaker but
+    fresher matches past the cutoff."""
     q = _auto_phrase(q)
     workspace_id = workspace_id or DEFAULT_WORKSPACE
     conn = get_conn()
@@ -185,8 +217,10 @@ def query_search(q: str, limit: int = 20, type: str = None, workspace_id: str = 
         sql += " AND m.type = ?"
         params.append(type)
     sql += " ORDER BY rank LIMIT ?"
-    params.append(limit)
-    return rows_to_dicts(conn.execute(sql, tuple(params)))
+    params.append(limit * 3)
+    rows = rows_to_dicts(conn.execute(sql, tuple(params)))
+    rows = _apply_recency_decay(rows)
+    return rows[:limit]
 
 
 def query_similar_error(error: str, limit: int = 5, workspace_id: str = None):
