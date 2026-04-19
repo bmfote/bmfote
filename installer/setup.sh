@@ -134,7 +134,7 @@ GITHUB_RAW="https://raw.githubusercontent.com/bmfote/bmfote/main/hooks"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" 2>/dev/null && pwd 2>/dev/null || echo "")"
 HOOKS_SRC="${SCRIPT_DIR:+$SCRIPT_DIR/../hooks}"
 
-for hook in post-compaction-context.sh pre-compaction-context.sh stop.sh stop-recap.sh sync-transcript.sh lib/resolve-workspace.sh; do
+for hook in post-compaction-context.sh pre-compaction-context.sh stop.sh stop-recap.sh stop-definitions.sh sync-transcript.sh lib/resolve-workspace.sh; do
   # `lib/foo.sh` lands at `cctx-lib/foo.sh`; everything else gets the `cctx-` prefix.
   case "$hook" in
     lib/*) TARGET="$HOOKS_DIR/cctx-lib/${hook#lib/}" ;;

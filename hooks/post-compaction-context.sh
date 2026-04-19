@@ -238,6 +238,25 @@ echo "Cloud context available. Current workspace: $WORKSPACE_ID. MCP tools do NO
 if [ -n "$KNOWN_WS_LINE" ]; then
   echo "$KNOWN_WS_LINE"
 fi
+
+# Pending definition edits banner — only surfaces when queue is non-trivial.
+# Gated to first-prompt-per-session via the same marker as PRIOR_SESSIONS.
+if [ -n "$SESSION_ID" ] && [ ! -f "$PRIOR_MARKER" ]; then
+  PENDING_JSON=$(curl -s --connect-timeout 2 --max-time 2 -H "$AUTH" \
+    "$CCTX_URL/api/definitions/pending-count?workspace_id=$WORKSPACE_ID" 2>/dev/null)
+  PENDING_COUNT=$(echo "$PENDING_JSON" | python3 -c "
+import sys, json
+try:
+    d = json.load(sys.stdin)
+    print(int(d.get('count', 0)))
+except Exception:
+    print(0)
+" 2>/dev/null || echo "0")
+  if [ "${PENDING_COUNT:-0}" -gt 5 ] 2>/dev/null; then
+    echo "📋 ${PENDING_COUNT} pending definition edits in $WORKSPACE_ID. Run \`cctx review\` when ready."
+  fi
+fi
+
 if [ -n "$PRIOR_SESSIONS_BLOCK" ]; then
   echo "$PRIOR_SESSIONS_BLOCK"
   # Mark that PRIOR_SESSIONS has been injected for this session so subsequent

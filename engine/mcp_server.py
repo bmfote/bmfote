@@ -37,6 +37,24 @@ def _get_queries():
     return query_search, query_similar_error, query_message, query_recent
 
 
+def _get_def_queries():
+    """Late import — same circular-dep workaround."""
+    from engine.server import (
+        query_propose_edit,
+        query_pending_edits,
+        query_apply_edit,
+        query_reject_edit,
+        query_edit_history,
+    )
+    return (
+        query_propose_edit,
+        query_pending_edits,
+        query_apply_edit,
+        query_reject_edit,
+        query_edit_history,
+    )
+
+
 @mcp.tool()
 def search_memory(
     query: str,
@@ -258,3 +276,157 @@ def remember(
         f"Memory saved to workspace '{ws}' (project='{project}'). "
         f"Searchable via search_memory. uuid={msg_uuid}"
     )
+
+
+# =============================================================
+# DEFINITION EDITS — canonical doc edits with session provenance
+# =============================================================
+
+
+@mcp.tool()
+def propose_definition_edit(
+    file_path: str,
+    new_content: str,
+    source_session_id: str,
+    old_content: Optional[str] = None,
+    reason: Optional[str] = None,
+    confidence: Optional[float] = None,
+    source_message_uuid: Optional[str] = None,
+    workspace: Optional[str] = None,
+) -> str:
+    """Queue a proposed edit to a canonical project definition file (icp.md,
+    playbook.md, etc.) for human review. The edit lands in the user's review
+    queue, linked by session_id for provenance. Local files remain the source
+    of truth — this only records the AI-proposed-edit history.
+
+    Use when the current session has refined a tracked definition with concrete
+    new information. Bias heavily toward proposing nothing if the change is
+    speculative.
+
+    Args:
+        file_path: Relative path from project root (e.g., 'icp.md').
+        new_content: Proposed new file content after the edit.
+        source_session_id: The session_id that produced this edit.
+        old_content: Current file content before the edit. Optional but
+            strongly recommended so the user sees a real diff.
+        reason: One-sentence justification for the edit. Cite the transcript.
+        confidence: 0-1 score. Edits below 0.7 are filtered by the proposer.
+        source_message_uuid: Specific message that triggered the edit, for
+            deep-linking back into the source session.
+        workspace: Workspace scope. Defaults to 'cctx-default'.
+    """
+    q_propose, *_ = _get_def_queries()
+    ws = workspace or "cctx-default"
+    edit_uuid = str(_uuid.uuid4())
+    result = q_propose(
+        uuid=edit_uuid,
+        workspace_id=ws,
+        file_path=file_path,
+        new_content=new_content,
+        old_content=old_content,
+        reason=reason,
+        confidence=confidence,
+        source_session_id=source_session_id,
+        source_message_uuid=source_message_uuid,
+    )
+    return (
+        f"Proposed edit queued for {file_path} in workspace '{ws}'. "
+        f"uuid={result['uuid']} — run `cctx review` to approve or reject."
+    )
+
+
+@mcp.tool()
+def list_pending_definition_edits(
+    workspace: Optional[str] = None,
+    limit: int = 50,
+) -> str:
+    """List pending definition edits in the review queue for this workspace.
+
+    Args:
+        workspace: Workspace scope. Defaults to 'cctx-default'.
+        limit: Max entries (default 50, max 200).
+    """
+    _, q_pending, *_ = _get_def_queries()
+    limit = min(limit, 200)
+    results = q_pending(workspace, limit)
+    if not results:
+        return f"No pending definition edits in workspace '{workspace or 'cctx-default'}'."
+
+    lines = [f"{len(results)} pending edit(s):\n"]
+    for r in results:
+        conf = f"{r['confidence']:.2f}" if r.get("confidence") is not None else "?"
+        reason = (r.get("reason") or "")[:120]
+        lines.append(
+            f"- {r['file_path']} (conf={conf}) — {reason}\n"
+            f"  uuid={r['uuid']}  session={r['source_session_id']}  created={r['created_at']}"
+        )
+    return "\n".join(lines)
+
+
+@mcp.tool()
+def apply_definition_edit(edit_uuid: str, workspace: Optional[str] = None) -> str:
+    """Approve a pending definition edit. The DB row flips to 'approved'; the
+    caller is responsible for writing new_content to disk (the CLI does this).
+
+    Args:
+        edit_uuid: UUID of the pending edit.
+        workspace: Workspace scope. Defaults to 'cctx-default'.
+    """
+    _, _, q_apply, *_ = _get_def_queries()
+    result = q_apply(edit_uuid, workspace)
+    if result is None:
+        return f"Edit not found: {edit_uuid}"
+    return (
+        f"Edit {edit_uuid} approved for {result['file_path']}. "
+        f"Write new_content to disk to complete the apply."
+    )
+
+
+@mcp.tool()
+def reject_definition_edit(edit_uuid: str, workspace: Optional[str] = None) -> str:
+    """Reject a pending definition edit.
+
+    Args:
+        edit_uuid: UUID of the pending edit.
+        workspace: Workspace scope. Defaults to 'cctx-default'.
+    """
+    _, _, _, q_reject, _ = _get_def_queries()
+    result = q_reject(edit_uuid, workspace)
+    if result is None:
+        return f"Edit not found: {edit_uuid}"
+    return f"Edit {edit_uuid} rejected for {result['file_path']}."
+
+
+@mcp.tool()
+def search_definition_history(
+    file_path: Optional[str] = None,
+    workspace: Optional[str] = None,
+    limit: int = 50,
+) -> str:
+    """Audit trail of proposed/approved/rejected edits for a file (or all
+    files in the workspace if file_path is omitted). Most-recent first.
+
+    Use when the user asks "why did we change X?" or "when did we update
+    our ICP?" — surfaces the session that produced each historical edit.
+
+    Args:
+        file_path: Filter to a specific file (e.g., 'icp.md'). Optional.
+        workspace: Workspace scope. Defaults to 'cctx-default'.
+        limit: Max entries (default 50, max 200).
+    """
+    *_, q_history = _get_def_queries()
+    limit = min(limit, 200)
+    results = q_history(workspace, file_path, limit)
+    if not results:
+        scope = f"file '{file_path}'" if file_path else f"workspace '{workspace or 'cctx-default'}'"
+        return f"No definition edit history for {scope}."
+
+    lines = [f"{len(results)} edit(s):\n"]
+    for r in results:
+        reason = (r.get("reason") or "")[:120]
+        reviewed = r.get("reviewed_at") or "pending"
+        lines.append(
+            f"- [{r['status']}] {r['file_path']} — {reason}\n"
+            f"  session={r['source_session_id']}  created={r['created_at']}  reviewed={reviewed}"
+        )
+    return "\n".join(lines)

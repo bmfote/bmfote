@@ -71,3 +71,36 @@ CREATE TRIGGER IF NOT EXISTS messages_au AFTER UPDATE ON messages BEGIN
   INSERT INTO messages_fts(messages_fts, rowid, content) VALUES('delete', old.id, old.content);
   INSERT INTO messages_fts(rowid, content) VALUES (new.id, new.content);
 END;
+
+-- =============================================================
+-- Definition edits (Phase 1 killer-app layer)
+--
+-- AI-proposed edits to project-level canonical markdown files
+-- (icp.md, playbook.md, etc.) captured at session end and queued
+-- for human review. Local files remain source-of-truth; this
+-- table stores the AI-proposed-edit history with session provenance.
+-- =============================================================
+
+CREATE TABLE IF NOT EXISTS definition_edits (
+  id INTEGER PRIMARY KEY,
+  uuid TEXT UNIQUE NOT NULL,
+  workspace_id TEXT NOT NULL,
+  file_path TEXT NOT NULL,
+  old_content TEXT,
+  new_content TEXT NOT NULL,
+  reason TEXT,
+  confidence REAL,
+  source_session_id TEXT NOT NULL,
+  source_message_uuid TEXT,
+  status TEXT NOT NULL DEFAULT 'pending',
+  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+  reviewed_at TIMESTAMP,
+  FOREIGN KEY (source_session_id) REFERENCES sessions(session_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_def_edits_ws_status
+  ON definition_edits(workspace_id, status);
+CREATE INDEX IF NOT EXISTS idx_def_edits_ws_file_status
+  ON definition_edits(workspace_id, file_path, status);
+CREATE INDEX IF NOT EXISTS idx_def_edits_session
+  ON definition_edits(source_session_id);

@@ -14,6 +14,7 @@
     "hooks/pre-compaction-context.sh",
     "hooks/stop.sh",
     "hooks/stop-recap.sh",
+    "hooks/stop-definitions.sh",
     "hooks/sync-transcript.sh",
     "hooks/lib/resolve-workspace.sh",
     "installer/managed_agents.py",
