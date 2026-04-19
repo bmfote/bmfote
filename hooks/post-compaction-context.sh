@@ -183,6 +183,39 @@ PRIOR_MARKER=""
 if [ -n "$SESSION_ID" ]; then
   PRIOR_MARKER="$MARKER_DIR/${SESSION_ID}.prior-injected"
 fi
+# --- Snapshot tracked definition files (once per session) ---
+# Captures the "before" state so the stop hook can diff at session end.
+SNAPSHOT_MARKER=""
+if [ -n "$SESSION_ID" ]; then
+  SNAPSHOT_MARKER="$MARKER_DIR/${SESSION_ID}.snapshot-created"
+fi
+if [ -n "$SESSION_ID" ] && [ ! -f "$SNAPSHOT_MARKER" ]; then
+  resolve_cwd "$INPUT"
+  if [ -n "$RESOLVED_CWD" ]; then
+    TRACKED_MANIFEST="$RESOLVED_CWD/.cctx/tracked.txt"
+    if [ -f "$TRACKED_MANIFEST" ]; then
+      SNAPSHOT_DIR="$HOME/.claude/hooks/.def-snapshots/$SESSION_ID"
+      mkdir -p "$SNAPSHOT_DIR" 2>/dev/null
+      while IFS= read -r rel_path; do
+        [ -z "$rel_path" ] && continue
+        case "$rel_path" in \#*|\ *) continue ;; esac
+        src="$RESOLVED_CWD/$rel_path"
+        if [ -f "$src" ]; then
+          mkdir -p "$SNAPSHOT_DIR/$(dirname "$rel_path")" 2>/dev/null
+          cp "$src" "$SNAPSHOT_DIR/$rel_path" 2>/dev/null
+        fi
+      done < "$TRACKED_MANIFEST"
+      printf '%s' "$RESOLVED_CWD" > "$SNAPSHOT_DIR/.cwd" 2>/dev/null
+    fi
+  fi
+  if [ -n "$SNAPSHOT_MARKER" ]; then
+    : > "$SNAPSHOT_MARKER"
+  fi
+
+  # Prune stale snapshot dirs (sessions that crashed without stop hook)
+  find "$HOME/.claude/hooks/.def-snapshots" -maxdepth 1 -type d -mmin +2880 -exec rm -rf {} + 2>/dev/null
+fi
+
 if [ -n "$SESSION_ID" ] && [ ! -f "$PRIOR_MARKER" ]; then
   PRIOR_JSON=$(curl -s --connect-timeout 2 --max-time 3 -H "$AUTH" \
     "$CCTX_URL/api/sessions?workspace_id=$WORKSPACE_ID&limit=3&exclude_session_id=$SESSION_ID" 2>/dev/null)
@@ -254,6 +287,101 @@ except Exception:
 " 2>/dev/null || echo "0")
   if [ "${PENDING_COUNT:-0}" -gt 5 ] 2>/dev/null; then
     echo "📋 ${PENDING_COUNT} pending definition edits in $WORKSPACE_ID. Run \`cctx review\` when ready."
+  fi
+fi
+
+# --- Inject .def files (once per session, before PRIOR_SESSIONS) ---
+if [ -n "$SESSION_ID" ] && [ ! -f "$PRIOR_MARKER" ] && [ -n "$RESOLVED_CWD" ]; then
+  DEF_DIR="$RESOLVED_CWD/.cctx/definitions"
+  if [ -d "$DEF_DIR" ]; then
+    DEF_BLOCK=$(RESOLVED_CWD="$RESOLVED_CWD" DEF_DIR="$DEF_DIR" python3 -c "
+import os, sys
+
+def_dir = os.environ['DEF_DIR']
+max_files = 10
+max_total_lines = 500
+
+entries = []
+for fname in os.listdir(def_dir):
+    if not fname.endswith('.def'):
+        continue
+    fpath = os.path.join(def_dir, fname)
+    try:
+        mtime = os.path.getmtime(fpath)
+        with open(fpath) as f:
+            content = f.read()
+        entries.append((mtime, fname, content))
+    except Exception:
+        continue
+
+if not entries:
+    sys.exit(0)
+
+entries.sort(key=lambda x: -x[0])
+entries = entries[:max_files]
+
+output_lines = ['DEFINITIONS — tracked project definitions with provenance:']
+total = 1
+for _, fname, content in entries:
+    file_lines = content.rstrip().split('\n')
+    if total + len(file_lines) + 3 > max_total_lines:
+        # Truncate: keep frontmatter + Now section, drop Pivots/Graveyard
+        kept = []
+        in_now = False
+        for line in file_lines:
+            if line.startswith('## Now'):
+                in_now = True
+            elif line.startswith('## Pivots') or line.startswith('## Graveyard') or line.startswith('## History'):
+                if in_now:
+                    in_now = False
+                    kept.append('(pivots/graveyard truncated for context budget)')
+                    break
+            if in_now or line.startswith('---') or line.startswith('tracks:') or line.startswith('version:') or line.startswith('updated:') or line.startswith('session:'):
+                kept.append(line)
+        file_lines = kept
+    output_lines.append(f'--- {fname} ---')
+    output_lines.extend(file_lines)
+    output_lines.append('--- end ---')
+    total += len(file_lines) + 3
+    if total >= max_total_lines:
+        break
+
+print('\n'.join(output_lines))
+" 2>/dev/null)
+    if [ -n "$DEF_BLOCK" ]; then
+      echo "$DEF_BLOCK"
+    fi
+  fi
+
+  # Fallback: if no local .def files, try database (team sync)
+  if [ -z "$DEF_BLOCK" ]; then
+    DB_DEF_BLOCK=$(curl -s --connect-timeout 2 --max-time 3 -H "$AUTH" \
+      "$CCTX_URL/api/def-files?workspace_id=$WORKSPACE_ID" 2>/dev/null | python3 -c "
+import sys, json
+try:
+    defs = json.load(sys.stdin)
+except Exception:
+    sys.exit(0)
+if not isinstance(defs, list) or not defs:
+    sys.exit(0)
+
+output = ['DEFINITIONS — tracked project definitions with provenance (from team database):']
+total = 1
+for d in defs[:10]:
+    fp = d.get('file_path', '?')
+    content = (d.get('content') or '').rstrip()
+    lines = content.split('\n')
+    if total + len(lines) + 3 > 500:
+        break
+    output.append(f'--- {fp}.def ---')
+    output.extend(lines)
+    output.append('--- end ---')
+    total += len(lines) + 3
+print('\n'.join(output))
+" 2>/dev/null)
+    if [ -n "$DB_DEF_BLOCK" ]; then
+      echo "$DB_DEF_BLOCK"
+    fi
   fi
 fi
 

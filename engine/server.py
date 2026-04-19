@@ -480,6 +480,95 @@ def query_edit_history(
 
 
 # =============================================================
+# TRACKED FILES + DEFINITION FILES — team-shareable registries
+# =============================================================
+
+def query_upsert_tracked_file(
+    workspace_id: str,
+    file_path: str,
+    tracked_by_session: str = None,
+) -> dict:
+    conn = get_conn()
+    conn.execute(
+        """
+        INSERT INTO tracked_files (workspace_id, file_path, tracked_by_session)
+        VALUES (?, ?, ?)
+        ON CONFLICT(workspace_id, file_path) DO NOTHING
+        """,
+        (workspace_id, file_path, tracked_by_session),
+    )
+    conn.commit()
+    if not is_remote_db():
+        conn.sync()
+    return {"workspace_id": workspace_id, "file_path": file_path, "status": "tracked"}
+
+
+def query_remove_tracked_file(workspace_id: str, file_path: str) -> dict:
+    conn = get_conn()
+    conn.execute(
+        "DELETE FROM tracked_files WHERE workspace_id = ? AND file_path = ?",
+        (workspace_id, file_path),
+    )
+    conn.commit()
+    if not is_remote_db():
+        conn.sync()
+    return {"workspace_id": workspace_id, "file_path": file_path, "status": "untracked"}
+
+
+def query_list_tracked_files(workspace_id: str = None) -> list[dict]:
+    workspace_id = workspace_id or DEFAULT_WORKSPACE
+    conn = get_conn()
+    return rows_to_dicts(conn.execute(
+        "SELECT workspace_id, file_path, tracked_at, tracked_by_session FROM tracked_files WHERE workspace_id = ? ORDER BY tracked_at ASC",
+        (workspace_id,),
+    ))
+
+
+def query_upsert_def_file(
+    workspace_id: str,
+    file_path: str,
+    content: str,
+    version: int = 1,
+    updated_by_session: str = None,
+) -> dict:
+    conn = get_conn()
+    now = datetime.now(timezone.utc).isoformat()
+    conn.execute(
+        """
+        INSERT INTO definition_files (workspace_id, file_path, content, version, updated_at, updated_by_session)
+        VALUES (?, ?, ?, ?, ?, ?)
+        ON CONFLICT(workspace_id, file_path) DO UPDATE SET
+            content = excluded.content,
+            version = excluded.version,
+            updated_at = excluded.updated_at,
+            updated_by_session = excluded.updated_by_session
+        """,
+        (workspace_id, file_path, content, version, now, updated_by_session),
+    )
+    conn.commit()
+    if not is_remote_db():
+        conn.sync()
+    return {"workspace_id": workspace_id, "file_path": file_path, "version": version}
+
+
+def query_get_def_file(workspace_id: str, file_path: str) -> dict | None:
+    conn = get_conn()
+    return row_to_dict(conn.execute(
+        "SELECT workspace_id, file_path, content, version, updated_at, updated_by_session FROM definition_files WHERE workspace_id = ? AND file_path = ?",
+        (workspace_id, file_path),
+    ))
+
+
+def query_list_def_files(workspace_id: str = None) -> list[dict]:
+    workspace_id = workspace_id or DEFAULT_WORKSPACE
+    conn = get_conn()
+    return rows_to_dicts(conn.execute(
+        "SELECT workspace_id, file_path, content, version, updated_at, updated_by_session FROM definition_files WHERE workspace_id = ? ORDER BY updated_at DESC",
+        (workspace_id,),
+    ))
+
+
+# =============================================================
 # CONVERSATION SEARCH ENDPOINTS
 # =============================================================
 
@@ -991,6 +1080,79 @@ def edit_history(
     limit: int = Query(default=50, le=200),
 ):
     return query_edit_history(workspace_id, file_path, limit)
+
+
+# =============================================================
+# TRACKED FILES + DEFINITION FILES — endpoints
+# =============================================================
+
+class TrackedFileCreate(BaseModel):
+    workspace_id: str = Field(max_length=200)
+    file_path: str = Field(max_length=500)
+    session_id: Optional[str] = Field(default=None, max_length=64)
+
+
+class DefFileUpsert(BaseModel):
+    workspace_id: str = Field(max_length=200)
+    file_path: str = Field(max_length=500)
+    content: str = Field(max_length=200000)
+    version: int = Field(default=1, ge=1)
+    session_id: Optional[str] = Field(default=None, max_length=64)
+
+
+@app.post("/api/tracked-files")
+@limiter.limit("60/minute")
+def register_tracked_file(request: Request, body: TrackedFileCreate):
+    return query_upsert_tracked_file(body.workspace_id, body.file_path, body.session_id)
+
+
+@app.delete("/api/tracked-files")
+@limiter.limit("60/minute")
+def unregister_tracked_file(
+    request: Request,
+    workspace_id: str = Query(),
+    file_path: str = Query(),
+):
+    return query_remove_tracked_file(workspace_id, file_path)
+
+
+@app.get("/api/tracked-files")
+@limiter.limit("60/minute")
+def list_tracked_files(
+    request: Request,
+    workspace_id: str = Query(default=None),
+):
+    return query_list_tracked_files(workspace_id)
+
+
+@app.post("/api/def-files")
+@limiter.limit("120/minute")
+def upsert_def_file(request: Request, body: DefFileUpsert):
+    return query_upsert_def_file(
+        body.workspace_id, body.file_path, body.content, body.version, body.session_id,
+    )
+
+
+@app.get("/api/def-files")
+@limiter.limit("60/minute")
+def list_def_files(
+    request: Request,
+    workspace_id: str = Query(default=None),
+):
+    return query_list_def_files(workspace_id)
+
+
+@app.get("/api/def-files/{file_path:path}")
+@limiter.limit("60/minute")
+def get_def_file(
+    request: Request,
+    file_path: str,
+    workspace_id: str = Query(default=None),
+):
+    result = query_get_def_file(workspace_id or DEFAULT_WORKSPACE, file_path)
+    if result is None:
+        raise HTTPException(status_code=404, detail="Definition file not found")
+    return result
 
 
 if __name__ == "__main__":
