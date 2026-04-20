@@ -362,6 +362,11 @@ def query_propose_edit(
 ) -> dict:
     """Insert a proposed edit. ON CONFLICT uuid: no-op (idempotent hook retries)."""
     conn = get_conn()
+    if source_session_id:
+        conn.execute(
+            "INSERT INTO sessions (session_id, project) VALUES (?, ?) ON CONFLICT(session_id) DO NOTHING",
+            (source_session_id, workspace_id),
+        )
     conn.execute(
         """
         INSERT INTO definition_edits (
