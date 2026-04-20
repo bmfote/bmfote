@@ -570,11 +570,16 @@ function slugForCwd(registry, cwd) {
 // ---------- definitions: track / untrack / tracked / review ----------
 
 function resolveCurrentWorkspace() {
-  if (process.env.CCTX_WORKSPACE) return process.env.CCTX_WORKSPACE;
   const cwd = process.cwd();
   const reg = readRegistry();
   const slug = slugForCwd(reg, cwd);
   if (slug) return slug;
+  try {
+    const md = fs.readFileSync(path.join(cwd, "CLAUDE.md"), "utf-8");
+    const m = md.match(/Workspace:\s*`([^`]+)`/);
+    if (m) return m[1];
+  } catch {}
+  if (process.env.CCTX_WORKSPACE) return process.env.CCTX_WORKSPACE;
   return "cctx-default";
 }
 
