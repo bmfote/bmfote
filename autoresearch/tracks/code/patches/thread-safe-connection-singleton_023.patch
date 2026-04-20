@@ -1,0 +1,44 @@
+--- a/engine/db.py
++++ b/engine/db.py
+@@ -1,6 +1,7 @@
+ """Shared database layer — Turso Cloud (libSQL embedded replica)."""
+ 
+ import os
++import threading
+ from pathlib import Path
+ from typing import Optional
+ 
+@@ -36,7 +37,8 @@
+ 
+ 
+ # Module-level singleton — reused across requests
+ _conn = None
++_conn_lock = threading.Lock()
+ 
+ 
+ def _open_and_heal():
+@@ -59,14 +61,15 @@
+     return conn
+ 
+ 
+ def get_conn():
+     """Get or create the shared database connection. Resets on failure."""
+     global _conn
+-    if _conn is None:
+-        _conn = _open_and_heal()
+-    try:
+-        _conn.execute("SELECT 1")
+-    except Exception:
+-        _conn = _open_and_heal()
+-    return _conn
++    with _conn_lock:
++        if _conn is None:
++            _conn = _open_and_heal()
++        try:
++            _conn.execute("SELECT 1")
++        except Exception:
++            _conn = _open_and_heal()
++        return _conn
+ 
+ 
+ def rows_to_dicts(cursor) -> list[dict]:

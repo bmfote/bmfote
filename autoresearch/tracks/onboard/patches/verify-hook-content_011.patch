@@ -1,0 +1,16 @@
+--- a/installer/setup.sh
++++ b/installer/setup.sh
+@@ -132,6 +132,13 @@
+     }
+   fi
+   chmod +x "$TARGET"
++
++  # Verify downloaded content is actually a shell script (not captive portal HTML)
++  if ! head -1 "$TARGET" 2>/dev/null | grep -q '^#!/bin/bash'; then
++    echo "  ERROR: Hook script corrupted — check if you're behind a captive portal."
++    echo "  Check: head -5 $TARGET"
++    exit 1
++  fi
+ done
+ 
+ # --- Step 5: Configure hooks in settings.json ---

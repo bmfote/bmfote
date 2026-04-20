@@ -1,0 +1,20 @@
+--- a/engine/server.py
++++ b/engine/server.py
+@@ -148,7 +148,16 @@ def _auto_phrase(q: str) -> str:
+     tokens = q.split()
+     if any(op in tokens for op in ("AND", "OR", "NOT", "NEAR")):
+         return q
+-    return f'"{q}"'
++    
++    # Single token: prefix wildcard for morphological variants
++    if len(tokens) == 1:
++        return f"{tokens[0]}*" if len(tokens[0]) >= 3 else tokens[0]
++    
++    # Multi-token: phrase match (boosts adjacent occurrences) + OR fallback (maintains recall)
++    phrase = " ".join(tokens)
++    expanded = [f"{t}*" if len(t) >= 3 else t for t in tokens]
++    or_clause = " OR ".join(expanded)
++    return f'"{phrase}" OR ({or_clause})'
+ 
+ 
+ def query_search(q: str, limit: int = 20, type: str = None, workspace_id: str = None):

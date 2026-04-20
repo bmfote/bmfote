@@ -1,0 +1,16 @@
+--- a/engine/schema.sql
++++ b/engine/schema.sql
+@@ -42,11 +42,12 @@
+ -- FTS5 virtual tables (standard SQLite FTS5 — works on Turso Cloud)
+ -- =============================================================
+ 
+ CREATE VIRTUAL TABLE IF NOT EXISTS messages_fts USING fts5(
+   content,
+   content=messages,
+-  content_rowid=id
++  content_rowid=id,
++  tokenize='porter unicode61'
+ );
+ 
+ -- =============================================================
+ -- FTS5 sync triggers (keep FTS in sync with base tables)

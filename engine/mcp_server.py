@@ -37,6 +37,12 @@ def _get_queries():
     return query_search, query_similar_error, query_message, query_recent
 
 
+def _get_def_file_queries():
+    """Late import for definition file queries."""
+    from engine.server import query_list_def_files, query_get_def_file
+    return query_list_def_files, query_get_def_file
+
+
 def _get_def_queries():
     """Late import — same circular-dep workaround."""
     from engine.server import (
@@ -208,7 +214,7 @@ def get_recent(
 def remember(
     content: str,
     topic: str = "",
-    project: str = "managed-agent",
+    project: Optional[str] = None,
     workspace: Optional[str] = None,
 ) -> str:
     """Save something to cloud context for any future agent session to recall.
@@ -228,7 +234,9 @@ def remember(
         topic: Short title (under 80 chars), prefixed to content for
             searchability. Optional.
         project: Project scope — a human-readable label on the session row.
-            Defaults to "managed-agent".
+            Defaults to the workspace name (or "managed-agent" if no workspace
+            is set). Session_id is derived from this, so sharing a project
+            across workspaces would merge their memory sessions.
         workspace: Workspace scope — the hard isolation boundary. Memories in
             different workspaces never cross over in recall. Defaults to
             'cctx-default'.
@@ -238,7 +246,8 @@ def remember(
 
     conn = get_conn()
     ws = workspace or "cctx-default"
-    session_id = f"agent-memory-{project}"
+    effective_project = project or workspace or "managed-agent"
+    session_id = f"agent-memory-{effective_project}"
     now = datetime.now(timezone.utc).isoformat()
 
     # Upsert the session row so the messages.session_id FK resolves.
@@ -250,7 +259,7 @@ def remember(
             last_message_at = excluded.last_message_at,
             project = COALESCE(sessions.project, excluded.project)
         """,
-        (session_id, project, now, now),
+        (session_id, effective_project, now, now),
     )
 
     # Write the memory as an assistant message so it's homogeneous with the
@@ -273,7 +282,7 @@ def remember(
         conn.sync()
 
     return (
-        f"Memory saved to workspace '{ws}' (project='{project}'). "
+        f"Memory saved to workspace '{ws}' (project='{effective_project}'). "
         f"Searchable via search_memory. uuid={msg_uuid}"
     )
 
@@ -430,3 +439,40 @@ def search_definition_history(
             f"  session={r['source_session_id']}  created={r['created_at']}  reviewed={reviewed}"
         )
     return "\n".join(lines)
+
+
+@mcp.tool()
+def get_definition_files(
+    workspace: Optional[str] = None,
+    file_path: Optional[str] = None,
+) -> str:
+    """Retrieve .def provenance files for tracked definitions. These files
+    capture the current state of a definition, how it evolved (pivots),
+    and what was abandoned (graveyard), linked to originating sessions.
+
+    Use when you need to understand the history of a project definition
+    (ICP, playbook, pricing, etc.) or want to avoid re-suggesting something
+    that was already tried and abandoned.
+
+    Args:
+        workspace: Workspace scope. Defaults to 'cctx-default'.
+        file_path: Specific file to retrieve (e.g., 'icp.md'). If omitted, returns all.
+    """
+    q_list, q_get = _get_def_file_queries()
+
+    if file_path:
+        result = q_get(workspace or "cctx-default", file_path)
+        if not result:
+            return f"No definition file found for '{file_path}' in workspace '{workspace or 'cctx-default'}'."
+        return result["content"]
+
+    results = q_list(workspace)
+    if not results:
+        return f"No definition files in workspace '{workspace or 'cctx-default'}'."
+
+    parts = [f"{len(results)} definition file(s):\n"]
+    for r in results:
+        parts.append(f"--- {r['file_path']}.def (v{r['version']}, updated {r['updated_at']}) ---")
+        parts.append(r["content"])
+        parts.append("--- end ---\n")
+    return "\n".join(parts)

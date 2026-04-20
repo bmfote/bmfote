@@ -56,7 +56,7 @@ tp = sys.argv[1]
 parts = tp.split('/projects/')
 if len(parts) > 1:
     d = parts[1].split('/')[0]
-    if 'github_projects-' in d: print(d.split('github_projects-')[-1])
+    if 'github-projects-' in d: print(d.split('github-projects-')[-1])
     elif d.startswith('-Users-'): print('home')
     else: print(d)
 else: print('')

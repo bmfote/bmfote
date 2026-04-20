@@ -1,0 +1,16 @@
+--- a/installer/setup.sh
++++ b/installer/setup.sh
+@@ -65,6 +65,13 @@
+ fi
+ CLAUDE_VERSION=$(claude --version 2>/dev/null || echo "unknown")
+ echo "  Found: claude $CLAUDE_VERSION"
++
++# Verify python3 is available (required for JSON parsing and hook configuration)
++if ! command -v python3 &> /dev/null; then
++  echo "  ERROR: python3 not found but required for setup."
++  echo "  Check: command -v python3 — if missing, install python3 for your OS"
++  exit 1
++fi
+ 
+ # --- Step 2: Test API connection ---
+ echo "[2/6] Testing API connection..."

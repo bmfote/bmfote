@@ -611,8 +611,7 @@ async function cmdTrack(rest) {
   const cwd = process.cwd();
   const abs = path.join(cwd, file);
   if (!fs.existsSync(abs)) {
-    // Permitted — the file may not exist yet; the proposer handles first-writes
-    console.log(`Note: ${file} does not exist yet. Tracking anyway — proposer will offer first-writes once you create it.`);
+    console.log(`Note: ${file} does not exist yet. Tracking anyway — observer will pick it up once created.`);
   }
   const list = readTrackedManifest(cwd);
   if (list.includes(file)) {
@@ -622,6 +621,12 @@ async function cmdTrack(rest) {
   list.push(file);
   writeTrackedManifest(cwd, list);
   console.log(`✓ Tracked: ${file}  (${list.length} total)`);
+
+  // Register in database for team sync (fail-open)
+  const workspace = resolveCurrentWorkspace();
+  try {
+    await api.post("/api/tracked-files", { workspace_id: workspace, file_path: file });
+  } catch {}
 }
 
 async function cmdUntrack(rest) {
@@ -639,6 +644,12 @@ async function cmdUntrack(rest) {
   }
   writeTrackedManifest(cwd, next);
   console.log(`✓ Untracked: ${file}  (${next.length} remaining)`);
+
+  // Remove from database (fail-open)
+  const workspace = resolveCurrentWorkspace();
+  try {
+    await api.del(`/api/tracked-files?workspace_id=${encodeURIComponent(workspace)}&file_path=${encodeURIComponent(file)}`);
+  } catch {}
 }
 
 async function cmdTracked() {
@@ -854,6 +865,62 @@ async function cmdRename(rest) {
   console.log(`✓ ${oldId} → ${newId}  (${res.messages_updated ?? "?"} messages, ${res.sessions_updated ?? "?"} sessions)`);
 }
 
+// ---------- history / defs ----------
+
+async function cmdHistory(rest) {
+  const file = rest[0];
+  const cwd = process.cwd();
+  const defDir = path.join(cwd, ".cctx", "definitions");
+
+  if (file) {
+    // Show specific .def file — strip extension if present (icp.md → icp.def)
+    const base = file.replace(/\.[^.]+$/, "");
+    const defPath = path.join(defDir, `${base}.def`);
+    if (fs.existsSync(defPath)) {
+      console.log(fs.readFileSync(defPath, "utf-8"));
+      return;
+    }
+    // Fallback: try database
+    const workspace = resolveCurrentWorkspace();
+    try {
+      const result = await api.get(`/api/def-files/${encodeURIComponent(file)}?workspace_id=${encodeURIComponent(workspace)}`);
+      if (result && result.content) {
+        console.log(`(from database — workspace: ${workspace})\n`);
+        console.log(result.content);
+        return;
+      }
+    } catch {}
+    console.log(`No definition history found for ${file}`);
+    console.log(`Tracked files are observed at session end. Edit the file during a session to generate a .def file.`);
+    return;
+  }
+
+  // List all .def files
+  const entries = [];
+  if (fs.existsSync(defDir)) {
+    for (const fname of fs.readdirSync(defDir)) {
+      if (!fname.endsWith(".def")) continue;
+      const content = fs.readFileSync(path.join(defDir, fname), "utf-8");
+      const vMatch = content.match(/version:\s*(\d+)/);
+      const uMatch = content.match(/updated:\s*(\S+)/);
+      const version = vMatch ? vMatch[1] : "?";
+      const updated = uMatch ? uMatch[1] : "?";
+      entries.push({ fname, version, updated });
+    }
+  }
+
+  if (!entries.length) {
+    console.log("No definition files yet.");
+    console.log("Track a file with `cctx track <file>`, then edit it during a session.");
+    return;
+  }
+
+  console.log("Definition files:\n");
+  for (const { fname, version, updated } of entries) {
+    console.log(`  ${fname}  v${version}  (updated ${updated})`);
+  }
+}
+
 // ---------- help ----------
 
 function showHelp() {
@@ -871,6 +938,8 @@ Commands:
   cctx untrack <file>                              Stop tracking a file
   cctx tracked                                     List tracked files in the current project
   cctx review                                      Review AI-proposed edits to tracked files
+  cctx history [file]                              Show definition provenance (.def files)
+  cctx defs                                        List all definition files
 
 Backend: https://github.com/bmfote/bmfote#host-your-own-server
 `);
@@ -893,6 +962,8 @@ Backend: https://github.com/bmfote/bmfote#host-your-own-server
       case "untrack": return await cmdUntrack(args.slice(1));
       case "tracked": return await cmdTracked();
       case "review":  return await cmdReview();
+      case "history": return await cmdHistory(args.slice(1));
+      case "defs":    return await cmdHistory([]);
       default:
         console.error(`Unknown command: ${command}`);
         console.error('Run "cctx --help" for usage.');

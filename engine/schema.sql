@@ -104,3 +104,37 @@ CREATE INDEX IF NOT EXISTS idx_def_edits_ws_file_status
   ON definition_edits(workspace_id, file_path, status);
 CREATE INDEX IF NOT EXISTS idx_def_edits_session
   ON definition_edits(source_session_id);
+
+-- =============================================================
+-- Tracked files — team-shareable registry of tracked definitions
+-- =============================================================
+
+CREATE TABLE IF NOT EXISTS tracked_files (
+  id INTEGER PRIMARY KEY,
+  workspace_id TEXT NOT NULL,
+  file_path TEXT NOT NULL,
+  tracked_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+  tracked_by_session TEXT,
+  UNIQUE(workspace_id, file_path)
+);
+
+CREATE INDEX IF NOT EXISTS idx_tracked_files_ws
+  ON tracked_files(workspace_id);
+
+-- =============================================================
+-- Definition files — .def file content stored for team sync
+-- =============================================================
+
+CREATE TABLE IF NOT EXISTS definition_files (
+  id INTEGER PRIMARY KEY,
+  workspace_id TEXT NOT NULL,
+  file_path TEXT NOT NULL,
+  content TEXT NOT NULL,
+  version INTEGER NOT NULL DEFAULT 1,
+  updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+  updated_by_session TEXT,
+  UNIQUE(workspace_id, file_path)
+);
+
+CREATE INDEX IF NOT EXISTS idx_def_files_ws
+  ON definition_files(workspace_id);
